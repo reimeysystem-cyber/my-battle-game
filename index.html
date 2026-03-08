@@ -10,7 +10,7 @@
         import { getAuth, signInAnonymously, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
         import { getFirestore, doc, setDoc, onSnapshot, updateDoc, deleteDoc, getDoc } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
 
-        // --- Firebase Setup (Your Configuration) ---
+        // --- Firebase Setup ---
         const firebaseConfig = {
             apiKey: "AIzaSyBtYoe3LVplo79NJdUY6TMsJDpXwAbgZXg",
             authDomain: "my-action-battle.firebaseapp.com",
@@ -27,6 +27,7 @@
 
         // --- Game State & Variables ---
         let user = null;
+        let userName = "Player"; // デフォルトユーザー名
         let roomId = "";
         let playerSide = ""; 
         let winCount = 0;
@@ -62,7 +63,6 @@
         // --- Auth Initialization ---
         const initAuth = async () => {
             try {
-                // 指数バックオフによるリトライ実装
                 let retryDelay = 1000;
                 for (let i = 0; i < 5; i++) {
                     try {
@@ -77,9 +77,7 @@
                 }
             } catch (e) {
                 console.error("Auth Error", e);
-                const errorMsg = "認証エラー: Firebase Consoleで'匿名認証'を有効にしてください。";
-                const logEl = document.getElementById('battle-log');
-                if (logEl) logEl.innerHTML = `<span class="text-red-500">${errorMsg}</span>`;
+                log("<span class='text-red-500'>認証エラー: 匿名認証を有効にしてください。</span>");
             }
         };
 
@@ -101,17 +99,21 @@
             if (screenName === 'start') updateLeaderboardUI();
         }
 
-        function createCharacter(rank, owner = 'player') {
+        function createCharacter(rank, ownerName = userName) {
             const name = CHAR_NAMES[rand(CHAR_NAMES.length)];
             let hp, atk;
             if (rank === 'S') { hp = 150 + rand(50); atk = 30 + rand(10); }
             else if (rank === 'A') { hp = 100 + rand(30); atk = 20 + rand(10); }
             else { hp = 60 + rand(20); atk = 10 + rand(10); }
-            return { id: Math.random().toString(36).substr(2, 9), name, rank, hp, maxHp: hp, atk, owner };
+            return { id: Math.random().toString(36).substr(2, 9), name, rank, hp, maxHp: hp, atk, owner: ownerName };
         }
 
         // --- QUEST (MINI GAME) ---
         window.startGame = () => {
+            const nameInput = document.getElementById('username-input');
+            if (nameInput.value.trim()) {
+                userName = nameInput.value.trim();
+            }
             showScreen(null); 
             gameState = 'playing';
             playerX = canvas.width / 2 - 20;
@@ -131,8 +133,14 @@
             if (frameCount % 60 === 0) obstacles.push({ x: rand(canvas.width - 30), y: -40, w: 30, h: 30 });
             if (frameCount % 100 === 0) items.push({ x: rand(canvas.width - 30), y: -40, rank: RANKS[rand(RANKS.length)] });
 
+            // Draw Player
             ctx.fillStyle = '#4ade80';
             ctx.fillRect(playerX, 420, 40, 40);
+            ctx.fillStyle = '#fff';
+            ctx.font = '10px Arial';
+            ctx.textAlign = 'center';
+            ctx.fillText(userName, playerX + 20, 415);
+            ctx.textAlign = 'left';
 
             ctx.fillStyle = '#f87171';
             for (let i = obstacles.length - 1; i >= 0; i--) {
@@ -231,7 +239,7 @@
             if (battleMode === 'multi') {
                 roomId = document.getElementById('room-id-input').value.trim();
                 if (!roomId) { log("Room IDを入力してください"); return; }
-                if (!user) { log("認証中または未認証です。Firebase Consoleで匿名認証が有効か確認してください。"); return; }
+                if (!user) { log("認証エラー: Firebaseの設定を確認してください"); return; }
                 showScreen('matching');
                 await startMultiplayer();
             } else {
@@ -249,7 +257,7 @@
             if (!snap.exists()) {
                 playerSide = 'p1';
                 await setDoc(roomRef, {
-                    p1: { team: selectedTeam, uid: user.uid, ready: true },
+                    p1: { team: selectedTeam, uid: user.uid, name: userName, ready: true },
                     p2: null,
                     turn: 'p1',
                     lastAction: null,
@@ -258,7 +266,7 @@
             } else {
                 playerSide = 'p2';
                 await updateDoc(roomRef, {
-                    p2: { team: selectedTeam, uid: user.uid, ready: true },
+                    p2: { team: selectedTeam, uid: user.uid, name: userName, ready: true },
                     status: 'playing'
                 });
             }
@@ -278,7 +286,7 @@
                 }
             }, (err) => {
                 console.error("Firestore Error:", err);
-                log("通信エラー: ルール設定を確認してください。");
+                log("通信エラーが発生しました。");
             });
         }
 
@@ -310,6 +318,7 @@
             const otherSide = playerSide === 'p1' ? 'p2' : 'p1';
             const myTeam = data[playerSide].team;
             const enemyTeam = data[otherSide] ? data[otherSide].team : [];
+            const otherName = data[otherSide] ? data[otherSide].name : "Unknown";
 
             const pUI = document.getElementById('player-team-ui');
             const eUI = document.getElementById('enemy-team-ui');
@@ -330,7 +339,7 @@
             myTeam.forEach(c => pUI.appendChild(createCardUI(c, false)));
             enemyTeam.forEach(c => eUI.appendChild(createCardUI(c, true)));
             
-            document.getElementById('battle-header').innerText = isMyTurn ? "YOUR TURN" : "WAITING...";
+            document.getElementById('battle-header').innerText = isMyTurn ? `あなたのターン (${userName})` : `${otherName}のターン待機中...`;
         }
 
         async function performMultiAttack(target) {
@@ -351,7 +360,7 @@
                 turn: otherSide,
                 lastAction: { 
                     by: playerSide, 
-                    msg: `${playerSide === 'p1' ? 'P1' : 'P2'} ${attacker.name}の攻撃！ ${attacker.atk}ダメ`
+                    msg: `${userName}の${attacker.name}の攻撃！ ${attacker.atk}ダメ`
                 }
             });
             log(`味方 ${attacker.name}の攻撃！ ${attacker.atk}ダメ`);
@@ -360,9 +369,9 @@
         // --- SOLO/AUTO BATTLE ---
         function runSoloBattle() {
             enemies = [
-                createCharacter('B', 'enemy'),
-                createCharacter(rand(2) === 0 ? 'A' : 'B', 'enemy'),
-                createCharacter(rand(3) === 0 ? 'S' : 'A', 'enemy')
+                createCharacter('B', 'CPU'),
+                createCharacter(rand(2) === 0 ? 'A' : 'B', 'CPU'),
+                createCharacter(rand(3) === 0 ? 'S' : 'A', 'CPU')
             ].slice(0, selectedTeam.length);
 
             selectedTeam.forEach(c => c.hp = c.maxHp);
@@ -385,7 +394,7 @@
                 const atk = isP ? pAlive[rand(pAlive.length)] : eAlive[rand(eAlive.length)];
                 const def = isP ? eAlive[rand(eAlive.length)] : pAlive[rand(pAlive.length)];
                 def.hp -= atk.atk;
-                log(`${isP ? '味方' : '敵'} ${atk.name} が攻撃！ ${atk.atk}ダメ`);
+                log(`${isP ? userName : 'CPU'} の ${atk.name} が攻撃！ ${atk.atk}ダメ`);
                 updateSoloUI();
             }, 800);
         }
@@ -417,7 +426,7 @@
                         const pAlive = selectedTeam.filter(c => c.hp > 0);
                         const attacker = pAlive[rand(pAlive.length)];
                         c.hp -= attacker.atk;
-                        log(`味方 ${attacker.name}の攻撃！ ${attacker.atk}ダメ`);
+                        log(`${userName}の${attacker.name}の攻撃！ ${attacker.atk}ダメ`);
                         updateSoloUI();
                         setTimeout(() => {
                             const eAlive = enemies.filter(c => c.hp > 0);
@@ -425,7 +434,7 @@
                                 const eAtk = eAlive[rand(eAlive.length)];
                                 const pDef = selectedTeam.filter(c => c.hp > 0)[rand(selectedTeam.filter(c => c.hp > 0).length)];
                                 pDef.hp -= eAtk.atk;
-                                log(`敵 ${eAtk.name}の反撃！ ${eAtk.atk}ダメ`);
+                                log(`CPUの${eAtk.name}の反撃！ ${eAtk.atk}ダメ`);
                                 updateSoloUI();
                                 setTimeout(startSoloPlayerTurn, 600);
                             } else {
@@ -439,6 +448,7 @@
             };
             selectedTeam.forEach(c => pUI.appendChild(createCardUI(c, false)));
             enemies.forEach(c => eUI.appendChild(createCardUI(c, true)));
+            document.getElementById('battle-header').innerText = isMyTurn ? `あなたのターン (${userName})` : `待機中...`;
         }
 
         // --- COMMON BATTLE UTILS ---
@@ -458,7 +468,7 @@
                 document.getElementById('top-score').innerText = `WINS: ${winCount}`;
                 log("<strong class='text-yellow-400'>VICTORY!</strong>");
             } else {
-                saveToLeaderboard(winCount);
+                saveToLeaderboard(userName, winCount);
                 winCount = 0;
                 document.getElementById('top-score').innerText = `WINS: 0`;
                 log("<strong class='text-red-500'>DEFEAT...</strong>");
@@ -466,9 +476,9 @@
             if (finishBtn) finishBtn.classList.remove('hidden');
         }
 
-        function saveToLeaderboard(score) {
+        function saveToLeaderboard(name, score) {
             if (score > 0) {
-                leaderboard.push({ date: new Date().toLocaleTimeString(), score });
+                leaderboard.push({ name, date: new Date().toLocaleTimeString(), score });
                 leaderboard.sort((a, b) => b.score - a.score);
                 leaderboard = leaderboard.slice(0, 5);
             }
@@ -477,12 +487,12 @@
         function updateLeaderboardUI() {
             const list = document.getElementById('leaderboard-list');
             if (leaderboard.length === 0) {
-                list.innerHTML = "No records yet";
+                list.innerHTML = "記録なし";
                 return;
             }
             list.innerHTML = leaderboard.map((entry, i) => 
                 `<div class="flex justify-between border-b border-gray-700 py-1">
-                    <span>${i+1}. ${entry.date}</span>
+                    <span>${i+1}. ${entry.name} (${entry.date})</span>
                     <span class="text-yellow-400 font-bold">${entry.score} Wins</span>
                 </div>`
             ).join('');
@@ -528,6 +538,7 @@
             to { box-shadow: 0 0 20px #ff0000; border-color: #ffffff; }
         }
         .hidden { display: none !important; }
+        input { font-family: sans-serif; }
     </style>
 </head>
 <body class="flex flex-col items-center justify-center min-h-screen">
@@ -542,12 +553,17 @@
             <canvas id="gameCanvas" width="360" height="500" class="pixel-border"></canvas>
             
             <!-- Start Screen -->
-            <div id="screen-start" class="absolute inset-0 flex flex-col items-center justify-center bg-black/80">
-                <p class="mb-4 text-center">障害物を避けながらカードを集めろ！</p>
-                <button onclick="startGame()" class="px-6 py-2 bg-yellow-500 text-black hover:bg-yellow-400 font-bold mb-4">START</button>
-                <div id="leaderboard" class="w-4/5 bg-gray-900/80 p-3 rounded text-xs">
-                    <h3 class="text-center text-yellow-500 mb-2 underline">LEADERBOARD</h3>
-                    <div id="leaderboard-list">No records yet</div>
+            <div id="screen-start" class="absolute inset-0 flex flex-col items-center justify-center bg-black/80 p-6">
+                <h2 class="text-xl text-yellow-500 mb-4">ようこそ！</h2>
+                <div class="w-full mb-6">
+                    <label class="block text-xs mb-1 text-gray-400">ユーザーネームを入力:</label>
+                    <input id="username-input" type="text" maxlength="10" placeholder="Player1" class="w-full p-2 text-black rounded font-sans font-bold">
+                </div>
+                <p class="mb-4 text-center text-xs">障害物を避けながらカードを集めろ！</p>
+                <button onclick="startGame()" class="w-full px-6 py-3 bg-yellow-500 text-black hover:bg-yellow-400 font-bold mb-6">ゲーム開始</button>
+                <div id="leaderboard" class="w-full bg-gray-900/80 p-3 rounded text-[10px]">
+                    <h3 class="text-center text-yellow-500 mb-2 underline font-bold">TOP RECORDS</h3>
+                    <div id="leaderboard-list">記録なし</div>
                 </div>
             </div>
 
@@ -570,7 +586,7 @@
                         <label class="flex items-center gap-1 cursor-pointer"><input type="radio" name="battleMode" value="manual"> SOLO</label>
                         <label class="flex items-center gap-1 cursor-pointer"><input type="radio" name="battleMode" value="multi"> MULTI</label>
                     </div>
-                    <input id="room-id-input" type="text" placeholder="Room ID (Multi only)" class="mt-2 w-full p-1 text-black text-xs rounded">
+                    <input id="room-id-input" type="text" placeholder="Room ID (Multi only)" class="mt-2 w-full p-1 text-black text-xs rounded font-sans">
                 </div>
 
                 <div class="flex gap-2">
@@ -588,7 +604,7 @@
 
             <!-- Battle Screen -->
             <div id="screen-battle" class="absolute inset-0 hidden flex flex-col items-center justify-center bg-black/80">
-                <div id="battle-header" class="w-full px-4 text-center mb-2 text-yellow-400 font-bold"></div>
+                <div id="battle-header" class="w-full px-4 text-center mb-2 text-yellow-400 font-bold text-sm"></div>
                 <div class="flex flex-col gap-4 w-full px-4">
                     <div id="enemy-team-ui" class="flex justify-center gap-2 min-h-[60px]"></div>
                     <div class="text-center text-red-500 font-bold py-1">VS</div>
