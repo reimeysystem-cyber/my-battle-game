@@ -1,1 +1,606 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Character Get & Battle - Multi</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script type="module">
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+        import { getAuth, signInAnonymously, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { getFirestore, doc, setDoc, onSnapshot, updateDoc, deleteDoc, getDoc } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
 
+        // --- Firebase Setup (Your Configuration) ---
+        const firebaseConfig = {
+            apiKey: "AIzaSyBtYoe3LVplo79NJdUY6TMsJDpXwAbgZXg",
+            authDomain: "my-action-battle.firebaseapp.com",
+            projectId: "my-action-battle",
+            storageBucket: "my-action-battle.firebasestorage.app",
+            messagingSenderId: "1078959278482",
+            appId: "1:1078959278482:web:546f3aa44c451c426e994b"
+        };
+        
+        const app = initializeApp(firebaseConfig);
+        const auth = getAuth(app);
+        const db = getFirestore(app);
+        const appId = "my-battle-app-v1";
+
+        // --- Game State & Variables ---
+        let user = null;
+        let roomId = "";
+        let playerSide = ""; 
+        let winCount = 0;
+        let leaderboard = [];
+
+        let gameState = 'start';
+        let playerX = 160;
+        let collectedCards = [];
+        let obstacles = [];
+        let items = [];
+        let myCharacters = [];
+        let selectedTeam = [];
+        let enemies = [];
+        let gameLoop;
+        let frameCount = 0;
+        let battleMode = 'auto'; 
+        let isMyTurn = false;
+        let currentRoomData = null;
+
+        const canvas = document.getElementById('gameCanvas');
+        const ctx = canvas.getContext('2d');
+        const CHAR_NAMES = ["Knight", "Mage", "Thief", "Dragon", "Elf", "Ogre", "Slime", "Hero"];
+        const RANKS = ["B", "B", "B", "B", "A", "A", "S"];
+
+        const screens = {
+            start: document.getElementById('screen-start'),
+            gacha: document.getElementById('screen-gacha'),
+            formation: document.getElementById('screen-formation'),
+            battle: document.getElementById('screen-battle'),
+            matching: document.getElementById('screen-matching')
+        };
+
+        // --- Auth Initialization ---
+        const initAuth = async () => {
+            try {
+                // 指数バックオフによるリトライ実装
+                let retryDelay = 1000;
+                for (let i = 0; i < 5; i++) {
+                    try {
+                        await signInAnonymously(auth);
+                        console.log("Auth success");
+                        return;
+                    } catch (e) {
+                        if (i === 4) throw e;
+                        await new Promise(r => setTimeout(r, retryDelay));
+                        retryDelay *= 2;
+                    }
+                }
+            } catch (e) {
+                console.error("Auth Error", e);
+                const errorMsg = "認証エラー: Firebase Consoleで'匿名認証'を有効にしてください。";
+                const logEl = document.getElementById('battle-log');
+                if (logEl) logEl.innerHTML = `<span class="text-red-500">${errorMsg}</span>`;
+            }
+        };
+
+        onAuthStateChanged(auth, (u) => { 
+            user = u; 
+            if (u) console.log("User connected:", u.uid);
+        });
+        
+        initAuth();
+
+        // --- Utilities ---
+        function rand(n) { return Math.floor(Math.random() * n); }
+        function showScreen(screenName) {
+            Object.values(screens).forEach(s => s && s.classList.add('hidden'));
+            if (screenName && screens[screenName]) {
+                screens[screenName].classList.remove('hidden');
+                gameState = screenName;
+            }
+            if (screenName === 'start') updateLeaderboardUI();
+        }
+
+        function createCharacter(rank, owner = 'player') {
+            const name = CHAR_NAMES[rand(CHAR_NAMES.length)];
+            let hp, atk;
+            if (rank === 'S') { hp = 150 + rand(50); atk = 30 + rand(10); }
+            else if (rank === 'A') { hp = 100 + rand(30); atk = 20 + rand(10); }
+            else { hp = 60 + rand(20); atk = 10 + rand(10); }
+            return { id: Math.random().toString(36).substr(2, 9), name, rank, hp, maxHp: hp, atk, owner };
+        }
+
+        // --- QUEST (MINI GAME) ---
+        window.startGame = () => {
+            showScreen(null); 
+            gameState = 'playing';
+            playerX = canvas.width / 2 - 20;
+            collectedCards = [];
+            obstacles = [];
+            items = [];
+            frameCount = 0;
+            if (gameLoop) cancelAnimationFrame(gameLoop);
+            gameLoop = requestAnimationFrame(update);
+        };
+
+        function update() {
+            if (gameState !== 'playing') return;
+            frameCount++;
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+            if (frameCount % 60 === 0) obstacles.push({ x: rand(canvas.width - 30), y: -40, w: 30, h: 30 });
+            if (frameCount % 100 === 0) items.push({ x: rand(canvas.width - 30), y: -40, rank: RANKS[rand(RANKS.length)] });
+
+            ctx.fillStyle = '#4ade80';
+            ctx.fillRect(playerX, 420, 40, 40);
+
+            ctx.fillStyle = '#f87171';
+            for (let i = obstacles.length - 1; i >= 0; i--) {
+                let o = obstacles[i];
+                o.y += 4 + (winCount * 0.2);
+                ctx.fillRect(o.x, o.y, o.w, o.h);
+                if (playerX < o.x + o.w && playerX + 40 > o.x && 420 < o.y + o.h && 460 > o.y) {
+                    endMiniGame();
+                    return;
+                }
+                if (o.y > canvas.height) obstacles.splice(i, 1);
+            }
+
+            for (let i = items.length - 1; i >= 0; i--) {
+                let item = items[i];
+                item.y += 3;
+                ctx.fillStyle = item.rank === 'S' ? '#facc15' : (item.rank === 'A' ? '#f87171' : '#60a5fa');
+                ctx.fillRect(item.x, item.y, 35, 45);
+                ctx.strokeStyle = "#fff";
+                ctx.strokeRect(item.x, item.y, 35, 45);
+                ctx.fillStyle = "#fff";
+                ctx.font = "bold 10px Arial";
+                ctx.fillText("RANK", item.x + 4, item.y + 15);
+                ctx.font = "bold 16px Arial";
+                ctx.fillText(item.rank, item.x + 10, item.y + 35);
+
+                if (playerX < item.x + 35 && playerX + 40 > item.x && 420 < item.y + 45 && 460 > item.y) {
+                    collectedCards.push(item.rank);
+                    items.splice(i, 1);
+                } else if (item.y > canvas.height) items.splice(i, 1);
+            }
+
+            ctx.fillStyle = '#fff';
+            ctx.font = '16px DotGothic16';
+            ctx.fillText(`Cards: ${collectedCards.length}`, 10, 25);
+            ctx.fillText(`Time: ${Math.floor((1200 - frameCount) / 60)}`, 280, 25);
+
+            if (frameCount >= 1200) endMiniGame();
+            else gameLoop = requestAnimationFrame(update);
+        }
+
+        function endMiniGame() {
+            cancelAnimationFrame(gameLoop);
+            showGacha();
+        }
+
+        // --- GACHA ---
+        function showGacha() {
+            showScreen('gacha');
+            const resultDiv = document.getElementById('gacha-result');
+            resultDiv.innerHTML = '';
+            if (collectedCards.length === 0) collectedCards.push('B');
+            collectedCards.forEach(rank => {
+                const char = createCharacter(rank);
+                myCharacters.push(char);
+                const card = document.createElement('div');
+                card.className = `p-2 bg-gray-800 border-2 border-gray-600 w-20 text-center text-[10px] rank-${rank} rounded`;
+                card.innerHTML = `<span class="font-bold text-xs">RANK ${rank}</span><br>${char.name}<br>ATK:${char.atk}`;
+                resultDiv.appendChild(card);
+            });
+        }
+
+        // --- FORMATION ---
+        window.showFormation = () => {
+            showScreen('formation');
+            renderCollection();
+        };
+
+        function renderCollection() {
+            const list = document.getElementById('collection-list');
+            list.innerHTML = '';
+            myCharacters.forEach(char => {
+                const isSelected = selectedTeam.some(t => t.id === char.id);
+                const item = document.createElement('div');
+                item.className = `p-1 cursor-pointer border-2 ${isSelected ? 'border-yellow-400 bg-gray-700' : 'border-transparent bg-gray-900'} text-[10px] rounded`;
+                item.innerHTML = `<span class="rank-${char.rank} font-bold">RANK ${char.rank}</span><br>${char.name}<br>HP:${char.hp}<br>ATK:${char.atk}`;
+                item.onclick = () => {
+                    const idx = selectedTeam.findIndex(t => t.id === char.id);
+                    if (idx > -1) selectedTeam.splice(idx, 1);
+                    else if (selectedTeam.length < 3) selectedTeam.push(char);
+                    renderCollection();
+                };
+                list.appendChild(item);
+            });
+            document.getElementById('battle-btn').disabled = selectedTeam.length === 0;
+        }
+
+        window.autoForm = () => {
+            selectedTeam = [...myCharacters].sort((a, b) => (b.atk + b.hp) - (a.atk + a.hp)).slice(0, 3);
+            renderCollection();
+        };
+
+        // --- BATTLE CONTROL ---
+        window.startBattle = async () => {
+            battleMode = document.querySelector('input[name="battleMode"]:checked').value;
+            if (battleMode === 'multi') {
+                roomId = document.getElementById('room-id-input').value.trim();
+                if (!roomId) { log("Room IDを入力してください"); return; }
+                if (!user) { log("認証中または未認証です。Firebase Consoleで匿名認証が有効か確認してください。"); return; }
+                showScreen('matching');
+                await startMultiplayer();
+            } else {
+                showScreen('battle');
+                runSoloBattle();
+            }
+        };
+
+        // --- MULTIPLAYER LOGIC ---
+        async function startMultiplayer() {
+            if (!user) return;
+            const roomRef = doc(db, 'artifacts', appId, 'public', 'data', 'rooms', roomId);
+            const snap = await getDoc(roomRef);
+
+            if (!snap.exists()) {
+                playerSide = 'p1';
+                await setDoc(roomRef, {
+                    p1: { team: selectedTeam, uid: user.uid, ready: true },
+                    p2: null,
+                    turn: 'p1',
+                    lastAction: null,
+                    status: 'waiting'
+                });
+            } else {
+                playerSide = 'p2';
+                await updateDoc(roomRef, {
+                    p2: { team: selectedTeam, uid: user.uid, ready: true },
+                    status: 'playing'
+                });
+            }
+
+            onSnapshot(roomRef, (docSnap) => {
+                if (!docSnap.exists()) return;
+                const data = docSnap.data();
+                currentRoomData = data;
+                
+                if (data.status === 'playing' && gameState === 'matching') {
+                    showScreen('battle');
+                    setupMultiBattleUI(data);
+                }
+
+                if (data.status === 'playing') {
+                    syncMultiBattle(data);
+                }
+            }, (err) => {
+                console.error("Firestore Error:", err);
+                log("通信エラー: ルール設定を確認してください。");
+            });
+        }
+
+        function setupMultiBattleUI(data) {
+            document.getElementById('battle-log').innerHTML = `ROOM: ${roomId} バトル開始！<br>`;
+            updateMultiUI(data);
+        }
+
+        function syncMultiBattle(data) {
+            isMyTurn = (data.turn === playerSide);
+            updateMultiUI(data);
+            if (data.lastAction && data.lastAction.by !== playerSide) {
+                log(data.lastAction.msg);
+            }
+
+            const myTeam = data[playerSide].team;
+            const otherSide = playerSide === 'p1' ? 'p2' : 'p1';
+            const enemyTeam = data[otherSide] ? data[otherSide].team : [];
+
+            const myAlive = myTeam.filter(c => c.hp > 0);
+            const enemyAlive = enemyTeam.filter(c => c.hp > 0);
+
+            if (enemyTeam.length > 0 && (myAlive.length === 0 || enemyAlive.length === 0)) {
+                finishBattle(enemyAlive.length === 0);
+            }
+        }
+
+        function updateMultiUI(data) {
+            const otherSide = playerSide === 'p1' ? 'p2' : 'p1';
+            const myTeam = data[playerSide].team;
+            const enemyTeam = data[otherSide] ? data[otherSide].team : [];
+
+            const pUI = document.getElementById('player-team-ui');
+            const eUI = document.getElementById('enemy-team-ui');
+            pUI.innerHTML = ''; eUI.innerHTML = '';
+
+            const createCardUI = (c, isEnemy) => {
+                const div = document.createElement('div');
+                const isDead = c.hp <= 0;
+                div.className = `w-20 p-1 bg-gray-800 border-2 ${isDead ? 'opacity-30 border-gray-900' : 'border-gray-500'} text-[10px] text-center rounded relative`;
+                if (!isDead && isEnemy && isMyTurn) {
+                    div.classList.add('target-glow');
+                    div.onclick = () => performMultiAttack(c);
+                }
+                div.innerHTML = `<span class="rank-${c.rank} font-bold">RANK ${c.rank}</span><br>${c.name}<br>HP:${Math.max(0, Math.floor(c.hp))}`;
+                return div;
+            };
+
+            myTeam.forEach(c => pUI.appendChild(createCardUI(c, false)));
+            enemyTeam.forEach(c => eUI.appendChild(createCardUI(c, true)));
+            
+            document.getElementById('battle-header').innerText = isMyTurn ? "YOUR TURN" : "WAITING...";
+        }
+
+        async function performMultiAttack(target) {
+            if (!isMyTurn) return;
+            const otherSide = playerSide === 'p1' ? 'p2' : 'p1';
+            const myTeam = currentRoomData[playerSide].team;
+            const enemyTeam = currentRoomData[otherSide].team;
+
+            const aliveMyTeam = myTeam.filter(c => c.hp > 0);
+            const attacker = aliveMyTeam[rand(aliveMyTeam.length)];
+            
+            const targetIdx = enemyTeam.findIndex(c => c.id === target.id);
+            enemyTeam[targetIdx].hp -= attacker.atk;
+
+            const roomRef = doc(db, 'artifacts', appId, 'public', 'data', 'rooms', roomId);
+            await updateDoc(roomRef, {
+                [otherSide]: { ...currentRoomData[otherSide], team: enemyTeam },
+                turn: otherSide,
+                lastAction: { 
+                    by: playerSide, 
+                    msg: `${playerSide === 'p1' ? 'P1' : 'P2'} ${attacker.name}の攻撃！ ${attacker.atk}ダメ`
+                }
+            });
+            log(`味方 ${attacker.name}の攻撃！ ${attacker.atk}ダメ`);
+        }
+
+        // --- SOLO/AUTO BATTLE ---
+        function runSoloBattle() {
+            enemies = [
+                createCharacter('B', 'enemy'),
+                createCharacter(rand(2) === 0 ? 'A' : 'B', 'enemy'),
+                createCharacter(rand(3) === 0 ? 'S' : 'A', 'enemy')
+            ].slice(0, selectedTeam.length);
+
+            selectedTeam.forEach(c => c.hp = c.maxHp);
+            document.getElementById('battle-log').innerHTML = `${battleMode.toUpperCase()} BATTLE START!<br>`;
+            
+            if (battleMode === 'auto') runAutoBattle();
+            else startSoloPlayerTurn();
+        }
+
+        function runAutoBattle() {
+            const turnInterval = setInterval(() => {
+                const pAlive = selectedTeam.filter(c => c.hp > 0);
+                const eAlive = enemies.filter(c => c.hp > 0);
+                if (pAlive.length === 0 || eAlive.length === 0) {
+                    clearInterval(turnInterval);
+                    finishBattle(eAlive.length === 0);
+                    return;
+                }
+                const isP = rand(2) === 0;
+                const atk = isP ? pAlive[rand(pAlive.length)] : eAlive[rand(eAlive.length)];
+                const def = isP ? eAlive[rand(eAlive.length)] : pAlive[rand(pAlive.length)];
+                def.hp -= atk.atk;
+                log(`${isP ? '味方' : '敵'} ${atk.name} が攻撃！ ${atk.atk}ダメ`);
+                updateSoloUI();
+            }, 800);
+        }
+
+        function startSoloPlayerTurn() {
+            const pAlive = selectedTeam.filter(c => c.hp > 0);
+            const eAlive = enemies.filter(c => c.hp > 0);
+            if (pAlive.length === 0 || eAlive.length === 0) {
+                finishBattle(eAlive.length === 0);
+                return;
+            }
+            isMyTurn = true;
+            log("あなたのターン：攻撃対象を選択");
+            updateSoloUI();
+        }
+
+        function updateSoloUI() {
+            const pUI = document.getElementById('player-team-ui');
+            const eUI = document.getElementById('enemy-team-ui');
+            pUI.innerHTML = ''; eUI.innerHTML = '';
+            const createCardUI = (c, isEnemy) => {
+                const div = document.createElement('div');
+                const isDead = c.hp <= 0;
+                div.className = `w-20 p-1 bg-gray-800 border-2 ${isDead ? 'opacity-30 border-gray-900' : 'border-gray-500'} text-[10px] text-center rounded`;
+                if (!isDead && isEnemy && isMyTurn) {
+                    div.classList.add('target-glow');
+                    div.onclick = () => {
+                        isMyTurn = false;
+                        const pAlive = selectedTeam.filter(c => c.hp > 0);
+                        const attacker = pAlive[rand(pAlive.length)];
+                        c.hp -= attacker.atk;
+                        log(`味方 ${attacker.name}の攻撃！ ${attacker.atk}ダメ`);
+                        updateSoloUI();
+                        setTimeout(() => {
+                            const eAlive = enemies.filter(c => c.hp > 0);
+                            if (eAlive.length > 0) {
+                                const eAtk = eAlive[rand(eAlive.length)];
+                                const pDef = selectedTeam.filter(c => c.hp > 0)[rand(selectedTeam.filter(c => c.hp > 0).length)];
+                                pDef.hp -= eAtk.atk;
+                                log(`敵 ${eAtk.name}の反撃！ ${eAtk.atk}ダメ`);
+                                updateSoloUI();
+                                setTimeout(startSoloPlayerTurn, 600);
+                            } else {
+                                finishBattle(true);
+                            }
+                        }, 600);
+                    };
+                }
+                div.innerHTML = `<span class="rank-${c.rank} font-bold">RANK ${c.rank}</span><br>${c.name}<br>HP:${Math.max(0, Math.floor(c.hp))}`;
+                return div;
+            };
+            selectedTeam.forEach(c => pUI.appendChild(createCardUI(c, false)));
+            enemies.forEach(c => eUI.appendChild(createCardUI(c, true)));
+        }
+
+        // --- COMMON BATTLE UTILS ---
+        function log(msg) {
+            const l = document.getElementById('battle-log');
+            if (l) {
+                l.innerHTML += msg + '<br>';
+                l.scrollTop = l.scrollHeight;
+            }
+        }
+
+        function finishBattle(isWin) {
+            isMyTurn = false;
+            const finishBtn = document.getElementById('battle-finish-btn');
+            if (isWin) {
+                winCount++;
+                document.getElementById('top-score').innerText = `WINS: ${winCount}`;
+                log("<strong class='text-yellow-400'>VICTORY!</strong>");
+            } else {
+                saveToLeaderboard(winCount);
+                winCount = 0;
+                document.getElementById('top-score').innerText = `WINS: 0`;
+                log("<strong class='text-red-500'>DEFEAT...</strong>");
+            }
+            if (finishBtn) finishBtn.classList.remove('hidden');
+        }
+
+        function saveToLeaderboard(score) {
+            if (score > 0) {
+                leaderboard.push({ date: new Date().toLocaleTimeString(), score });
+                leaderboard.sort((a, b) => b.score - a.score);
+                leaderboard = leaderboard.slice(0, 5);
+            }
+        }
+
+        function updateLeaderboardUI() {
+            const list = document.getElementById('leaderboard-list');
+            if (leaderboard.length === 0) {
+                list.innerHTML = "No records yet";
+                return;
+            }
+            list.innerHTML = leaderboard.map((entry, i) => 
+                `<div class="flex justify-between border-b border-gray-700 py-1">
+                    <span>${i+1}. ${entry.date}</span>
+                    <span class="text-yellow-400 font-bold">${entry.score} Wins</span>
+                </div>`
+            ).join('');
+        }
+
+        window.resetGame = async () => {
+            if (roomId) {
+                const roomRef = doc(db, 'artifacts', appId, 'public', 'data', 'rooms', roomId);
+                await deleteDoc(roomRef).catch(() => {});
+                roomId = "";
+            }
+            showScreen('start');
+            selectedTeam = [];
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+        };
+
+        // --- INPUT ---
+        window.addEventListener('keydown', e => {
+            if (gameState !== 'playing') return;
+            if (e.key === 'ArrowLeft') playerX = Math.max(0, playerX - 25);
+            if (e.key === 'ArrowRight') playerX = Math.min(canvas.width - 40, playerX + 25);
+        });
+        canvas.addEventListener('touchstart', e => {
+            if (gameState !== 'playing') return;
+            const touchX = e.touches[0].clientX - canvas.getBoundingClientRect().left;
+            if (touchX < canvas.width / 2) playerX = Math.max(0, playerX - 40);
+            else playerX = Math.min(canvas.width - 40, playerX + 40);
+        });
+
+        window.onload = () => showScreen('start');
+    </script>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=DotGothic16&display=swap');
+        body { font-family: 'DotGothic16', sans-serif; background: #1a1a1a; color: white; overflow: hidden; }
+        canvas { display: block; margin: 0 auto; background: #222; touch-action: none; }
+        .pixel-border { border: 4px solid #fff; box-shadow: 4px 4px 0px #888; }
+        .rank-S { color: #facc15; text-shadow: 0 0 10px #facc15; }
+        .rank-A { color: #f87171; }
+        .rank-B { color: #60a5fa; }
+        .target-glow { animation: glow 1s infinite alternate; cursor: pointer; }
+        @keyframes glow {
+            from { box-shadow: 0 0 5px #ff0000; border-color: #ff0000; }
+            to { box-shadow: 0 0 20px #ff0000; border-color: #ffffff; }
+        }
+        .hidden { display: none !important; }
+    </style>
+</head>
+<body class="flex flex-col items-center justify-center min-h-screen">
+
+    <div id="ui-container" class="w-full max-w-md p-4 flex flex-col items-center">
+        <div class="flex justify-between w-full items-center mb-2">
+            <h1 class="text-2xl text-yellow-400">QUEST & BATTLE</h1>
+            <div id="top-score" class="text-sm bg-gray-800 px-2 py-1 rounded">WINS: 0</div>
+        </div>
+        
+        <div id="game-container" class="relative">
+            <canvas id="gameCanvas" width="360" height="500" class="pixel-border"></canvas>
+            
+            <!-- Start Screen -->
+            <div id="screen-start" class="absolute inset-0 flex flex-col items-center justify-center bg-black/80">
+                <p class="mb-4 text-center">障害物を避けながらカードを集めろ！</p>
+                <button onclick="startGame()" class="px-6 py-2 bg-yellow-500 text-black hover:bg-yellow-400 font-bold mb-4">START</button>
+                <div id="leaderboard" class="w-4/5 bg-gray-900/80 p-3 rounded text-xs">
+                    <h3 class="text-center text-yellow-500 mb-2 underline">LEADERBOARD</h3>
+                    <div id="leaderboard-list">No records yet</div>
+                </div>
+            </div>
+
+            <!-- Gacha Screen -->
+            <div id="screen-gacha" class="absolute inset-0 hidden flex flex-col items-center justify-center bg-black/90">
+                <h2 class="text-2xl mb-4 text-yellow-400">NEW CHARACTERS!</h2>
+                <div id="gacha-result" class="flex flex-wrap justify-center gap-2 mb-4"></div>
+                <button onclick="showFormation()" class="px-6 py-2 bg-blue-500 text-white hover:bg-blue-400 font-bold">NEXT: 編成へ</button>
+            </div>
+
+            <!-- Formation Screen -->
+            <div id="screen-formation" class="absolute inset-0 hidden flex flex-col items-center justify-center bg-black/90 p-4">
+                <h2 class="text-xl mb-2 text-blue-300">チーム編成 (最大3体)</h2>
+                <div id="collection-list" class="grid grid-cols-3 gap-2 w-full max-h-40 overflow-y-auto mb-4 bg-gray-800 p-2"></div>
+                
+                <div class="bg-gray-700 p-2 rounded mb-4 w-full text-center">
+                    <p class="text-[10px] mb-1">BATTLE MODE:</p>
+                    <div class="flex justify-center gap-2 text-xs">
+                        <label class="flex items-center gap-1 cursor-pointer"><input type="radio" name="battleMode" value="auto" checked> AUTO</label>
+                        <label class="flex items-center gap-1 cursor-pointer"><input type="radio" name="battleMode" value="manual"> SOLO</label>
+                        <label class="flex items-center gap-1 cursor-pointer"><input type="radio" name="battleMode" value="multi"> MULTI</label>
+                    </div>
+                    <input id="room-id-input" type="text" placeholder="Room ID (Multi only)" class="mt-2 w-full p-1 text-black text-xs rounded">
+                </div>
+
+                <div class="flex gap-2">
+                    <button onclick="autoForm()" class="px-4 py-2 bg-gray-600 text-white font-bold text-xs">おすすめ</button>
+                    <button id="battle-btn" onclick="startBattle()" class="px-4 py-2 bg-red-600 text-white hover:bg-red-500 font-bold disabled:opacity-50 text-xs">BATTLE!</button>
+                </div>
+            </div>
+
+            <!-- Matching Screen -->
+            <div id="screen-matching" class="absolute inset-0 hidden flex flex-col items-center justify-center bg-black/90">
+                <div class="animate-pulse text-yellow-400 text-xl">MATCHING...</div>
+                <p class="text-xs mt-2">対戦相手を待っています...</p>
+                <button onclick="resetGame()" class="mt-4 text-xs text-gray-400 underline">キャンセル</button>
+            </div>
+
+            <!-- Battle Screen -->
+            <div id="screen-battle" class="absolute inset-0 hidden flex flex-col items-center justify-center bg-black/80">
+                <div id="battle-header" class="w-full px-4 text-center mb-2 text-yellow-400 font-bold"></div>
+                <div class="flex flex-col gap-4 w-full px-4">
+                    <div id="enemy-team-ui" class="flex justify-center gap-2 min-h-[60px]"></div>
+                    <div class="text-center text-red-500 font-bold py-1">VS</div>
+                    <div id="player-team-ui" class="flex justify-center gap-2 min-h-[60px]"></div>
+                </div>
+                <div id="battle-log" class="text-[10px] h-20 overflow-hidden w-full px-4 text-gray-300 mt-4 border-t border-gray-700 pt-1"></div>
+                <button id="battle-finish-btn" onclick="resetGame()" class="hidden mt-4 px-6 py-2 bg-yellow-500 text-black font-bold">RESULT</button>
+            </div>
+        </div>
+
+        <p class="mt-4 text-xs text-gray-400">← PC: 左右矢印 / Mobile: 左右タップ</p>
+    </div>
+
+</body>
+</html>
