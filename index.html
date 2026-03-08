@@ -254,7 +254,7 @@
             }
         };
 
-        // --- MULTIPLAYER (Simplified Logic for Version Update) ---
+        // --- MULTIPLAYER ---
         async function startMultiplayer() {
             if (!user) return;
             const roomRef = doc(db, 'artifacts', appId, 'public', 'data', 'rooms', roomId);
@@ -301,7 +301,8 @@
                     div.classList.add('target-glow');
                     div.onclick = () => performMultiAction(c, isEnemy);
                 }
-                div.innerHTML = `<span class="rank-${c.rank} font-bold">RANK ${c.rank}</span><br>${c.name}<br>HP:${Math.max(0, Math.floor(c.hp))}`;
+                const statLabel = c.type === 'healer' ? 'HEAL' : 'ATK';
+                div.innerHTML = `<span class="rank-${c.rank} font-bold">RANK ${c.rank}</span><br>${c.name}<br>HP:${Math.max(0, Math.floor(c.hp))}<br>${statLabel}:${c.atk}`;
                 return div;
             };
 
@@ -425,7 +426,8 @@
                         }, 600);
                     };
                 }
-                div.innerHTML = `<span class="rank-${c.rank} font-bold">RANK ${c.rank}</span><br>${c.name}<br>HP:${Math.max(0, Math.floor(c.hp))}`;
+                const statLabel = c.type === 'healer' ? 'HEAL' : 'ATK';
+                div.innerHTML = `<span class="rank-${c.rank} font-bold">RANK ${c.rank}</span><br>${c.name}<br>HP:${Math.max(0, Math.floor(c.hp))}<br>${statLabel}:${c.atk}`;
                 return div;
             };
             selectedTeam.forEach(c => pUI.appendChild(createCardUI(c, false)));
@@ -447,7 +449,12 @@
 
         function saveToLeaderboard(name, score) {
             if (score > 0) {
-                leaderboard.push({ name, date: new Date().toLocaleTimeString(), score });
+                const existing = leaderboard.findIndex(l => l.name === name);
+                if (existing > -1) {
+                    if (leaderboard[existing].score < score) leaderboard[existing].score = score;
+                } else {
+                    leaderboard.push({ name, date: new Date().toLocaleTimeString(), score });
+                }
                 leaderboard.sort((a, b) => b.score - a.score);
                 leaderboard = leaderboard.slice(0, 5);
             }
