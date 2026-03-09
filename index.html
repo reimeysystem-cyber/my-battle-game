@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>Character Get & Battle - Fix Click Issue</title>
+    <title>Character Get & Battle - Responsive Fix</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <script type="module">
         import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
@@ -12,18 +12,37 @@
 
         // --- Firebase Configuration ---
         let app, auth, db;
-        const appId = typeof __app_id !== 'undefined' ? __app_id : "character-battle-save-v1";
+        const appId = typeof __app_id !== 'undefined' ? __app_id : "character-battle-v1";
 
-        const firebaseConfig = JSON.parse(__firebase_config);
-        app = initializeApp(firebaseConfig);
-        auth = getAuth(app);
-        db = getFirestore(app);
+        const initFirebase = async () => {
+            try {
+                if (typeof __firebase_config !== 'undefined') {
+                    const firebaseConfig = JSON.parse(__firebase_config);
+                    app = initializeApp(firebaseConfig);
+                    auth = getAuth(app);
+                    db = getFirestore(app);
+
+                    if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
+                        await signInWithCustomToken(auth, __initial_auth_token);
+                    } else {
+                        await signInAnonymously(auth);
+                    }
+
+                    onAuthStateChanged(auth, (u) => {
+                        user = u;
+                        if (u) loadUserData(u.uid);
+                    });
+                }
+            } catch (e) {
+                console.warn("Firebase initialization failed, running in local mode.", e);
+            }
+        };
 
         // --- Game Variables ---
         let user = null;
         let userName = localStorage.getItem('pName') || "Player";
         let winCount = 0;
-        let totalCoins = 0;
+        let totalCoins = 100; // 初期コイン
         let upgrades = { atk: 0, hp: 0 };
         let gameState = 'start';
         let playerX = 160;
@@ -45,24 +64,12 @@
         let currentFilter = 'ALL';
         const MAX_TURNS = 20;
 
-        const canvas = document.getElementById('gameCanvas');
-        const ctx = canvas.getContext('2d');
         const CHAR_NAMES = ["Knight", "Mage", "Thief", "Dragon", "Elf", "Ogre", "Slime", "Hero", "Priest", "Angel", "Devil", "Valkyrie"];
         const RANKS = ["B", "B", "B", "B", "A", "A", "S"];
 
-        const screens = {
-            start: document.getElementById('screen-start'),
-            gacha: document.getElementById('screen-gacha'),
-            formation: document.getElementById('screen-formation'),
-            battle: document.getElementById('screen-battle'),
-            difficulty: document.getElementById('screen-difficulty'),
-            shop: document.getElementById('screen-shop'),
-            titles: document.getElementById('screen-titles'),
-            gachaMain: document.getElementById('screen-gacha-main')
-        };
-
         // --- Functions ---
         async function loadUserData(uid) {
+            if (!db) return;
             try {
                 const userRef = doc(db, 'artifacts', appId, 'users', uid, 'data', 'profile');
                 const snap = await getDoc(userRef);
@@ -81,24 +88,18 @@
         }
 
         async function saveUserData() {
-            if (!user) return;
+            localStorage.setItem('myChars', JSON.stringify(myCharacters));
+            localStorage.setItem('winCount', winCount);
+            localStorage.setItem('totalCoins', totalCoins);
+            if (!user || !db) return;
             try {
                 const userRef = doc(db, 'artifacts', appId, 'users', user.uid, 'data', 'profile');
                 await setDoc(userRef, {
                     winCount, totalCoins, upgrades, myCharacters, lastUpdated: serverTimestamp()
                 }, { merge: true });
-                updateMainUI();
             } catch (e) { console.error(e); }
+            updateMainUI();
         }
-
-        const initAuth = async () => {
-            if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
-                await signInWithCustomToken(auth, __initial_auth_token);
-            } else { await signInAnonymously(auth); }
-        };
-
-        onAuthStateChanged(auth, (u) => { user = u; if (u) loadUserData(u.uid); });
-        initAuth();
 
         function createCharacter(rank, owner = 'Player') {
             const name = CHAR_NAMES[rand(CHAR_NAMES.length)];
@@ -132,11 +133,19 @@
         }
 
         window.showScreen = (screenName) => {
-            Object.values(screens).forEach(s => { if (s) s.classList.add('hidden'); });
-            if (screenName && screens[screenName]) {
-                screens[screenName].classList.remove('hidden');
-                gameState = screenName;
-            } else { gameState = 'playing'; }
+            const screenEls = document.querySelectorAll('.screen-layer');
+            screenEls.forEach(s => s.classList.add('hidden'));
+            
+            if (screenName) {
+                const target = document.getElementById('screen-' + screenName);
+                if (target) {
+                    target.classList.remove('hidden');
+                    gameState = screenName;
+                }
+            } else {
+                gameState = 'playing';
+            }
+            
             if (screenName === 'formation') renderCollection();
             if (screenName === 'shop') renderShop();
             if (screenName === 'titles') renderTitles();
@@ -172,8 +181,10 @@
         };
 
         function updateMainUI() {
-            document.getElementById('top-score').innerText = `${winCount} WINS | 🪙 ${totalCoins}`;
-            document.getElementById('player-title').innerText = getTitle().text;
+            const scoreEl = document.getElementById('top-score');
+            const titleEl = document.getElementById('player-title');
+            if(scoreEl) scoreEl.innerText = `${winCount} WINS | 🪙 ${totalCoins}`;
+            if(titleEl) titleEl.innerText = getTitle().text;
         }
 
         const TITLE_LIST = [
@@ -189,13 +200,17 @@
         
         window.openDifficultySelect = () => {
             const nameInput = document.getElementById('username-input');
-            if (nameInput?.value.trim()) { userName = nameInput.value.trim(); localStorage.setItem('pName', userName); }
+            if (nameInput?.value.trim()) { 
+                userName = nameInput.value.trim(); 
+                localStorage.setItem('pName', userName); 
+            }
             window.showScreen('difficulty');
         };
 
         window.startQuest = (lv) => {
             difficultyLevel = lv;
             window.showScreen(null); 
+            const canvas = document.getElementById('gameCanvas');
             playerX = canvas.width / 2 - 20; targetX = playerX;
             collectedCards = []; items = []; obstacles = []; collectedCoins = 0; frameCount = 0;
             if (gameLoop) cancelAnimationFrame(gameLoop);
@@ -204,6 +219,8 @@
 
         function update() {
             if (gameState !== 'playing') return;
+            const canvas = document.getElementById('gameCanvas');
+            const ctx = canvas.getContext('2d');
             frameCount++;
             ctx.clearRect(0, 0, canvas.width, canvas.height);
             playerX += (targetX - playerX) * 0.3;
@@ -272,6 +289,7 @@
 
         function renderCollection() {
             const list = document.getElementById('collection-list');
+            if(!list) return;
             list.innerHTML = '';
             const filteredChars = myCharacters.filter(c => currentFilter === 'ALL' || c.rank === currentFilter);
             if (filteredChars.length === 0) { list.innerHTML = '<div class="col-span-3 text-center py-10 text-gray-500 text-xs">なし</div>'; }
@@ -289,12 +307,14 @@
                 };
                 list.appendChild(item);
             });
-            document.getElementById('battle-btn').disabled = selectedTeam.length === 0;
+            const btn = document.getElementById('battle-btn');
+            if(btn) btn.disabled = selectedTeam.length === 0;
         }
 
         window.openShop = () => window.showScreen('shop');
         function renderShop() {
             const list = document.getElementById('shop-items');
+            if(!list) return;
             list.innerHTML = '';
             const goods = [{ key: 'atk', name: '全攻撃+10', cost: 300 }, { key: 'hp', name: '全HP+30', cost: 300 }];
             goods.forEach(item => {
@@ -318,6 +338,7 @@
         window.openTitles = () => window.showScreen('titles');
         function renderTitles() {
             const list = document.getElementById('title-list');
+            if(!list) return;
             list.innerHTML = '';
             TITLE_LIST.forEach(t => {
                 const unlocked = t.check();
@@ -330,7 +351,8 @@
 
         window.startBattleAction = async () => {
             currentTurnCount = 1;
-            battleMode = document.querySelector('input[name="battleMode"]:checked').value;
+            const modeInput = document.querySelector('input[name="battleMode"]:checked');
+            battleMode = modeInput ? modeInput.value : 'auto';
             window.showScreen('battle');
             enemies = [createCharacter('B', 'CPU'), createCharacter('A', 'CPU'), createCharacter('S', 'CPU')].slice(0, selectedTeam.length);
             selectedTeam.forEach(c => { c.currentHp = c.maxHp; c.mp = c.maxMp; });
@@ -340,6 +362,7 @@
 
         function addLog(msg, colorClass = "text-white") {
             const logArea = document.getElementById('battle-log');
+            if(!logArea) return;
             const entry = document.createElement('div');
             entry.className = `${colorClass} text-[9px] mb-1`; entry.innerText = msg;
             logArea.prepend(entry);
@@ -379,8 +402,10 @@
 
         function updateBattleUI() {
             const pUI = document.getElementById('player-team-ui'), eUI = document.getElementById('enemy-team-ui');
+            if(!pUI || !eUI) return;
             pUI.innerHTML = ''; eUI.innerHTML = '';
-            document.getElementById('battle-header').innerText = `TURN ${currentTurnCount}/${MAX_TURNS}`;
+            const header = document.getElementById('battle-header');
+            if(header) header.innerText = `TURN ${currentTurnCount}/${MAX_TURNS}`;
             const render = (c, i, isE) => {
                 const d = document.createElement('div');
                 const isSelected = !isE && selectedActorIdx === i;
@@ -413,7 +438,8 @@
         }
 
         async function finishBattle(win) {
-            document.getElementById('battle-finish-btn').classList.remove('hidden');
+            const finishBtn = document.getElementById('battle-finish-btn');
+            if(finishBtn) finishBtn.classList.remove('hidden');
             if (win) { winCount++; totalCoins += 50; } else { winCount = 0; }
             await saveUserData();
         }
@@ -422,35 +448,58 @@
 
         function handleMove(e) {
             if (gameState !== 'playing') return;
+            const canvas = document.getElementById('gameCanvas');
             const r = canvas.getBoundingClientRect(), x = e.touches ? e.touches[0].clientX : e.clientX;
             targetX = Math.max(0, Math.min(canvas.width - 40, (x - r.left) * (canvas.width / r.width) - 20));
         }
-        canvas.addEventListener('mousemove', (e) => { if(e.buttons===1) handleMove(e); });
-        canvas.addEventListener('touchmove', handleMove, {passive:false});
-        window.onload = () => window.showScreen('start');
+
+        window.onload = async () => {
+            const canvas = document.getElementById('gameCanvas');
+            canvas.addEventListener('mousemove', (e) => { if(e.buttons===1) handleMove(e); });
+            canvas.addEventListener('touchmove', handleMove, {passive:false});
+            
+            await initFirebase();
+            window.showScreen('start');
+        };
     </script>
     <style>
         @import url('https://fonts.googleapis.com/css2?family=DotGothic16&display=swap');
         body { font-family: 'DotGothic16', sans-serif; background: #0a0a0a; color: white; overflow: hidden; margin: 0; }
-        canvas { display: block; background: #111; border: 4px solid #333; max-width: 100%; height: auto; touch-action: none; z-index: 10; position: relative; }
-        .hidden { display: none !important; }
         
-        /* 画面レイヤーを最前面に、かつ非表示時はクリックを遮断しない */
-        .screen-layer { 
-            position: absolute; top: 0; left: 0; right: 0; bottom: 0; 
-            z-index: 100; display: flex; flex-direction: column; align-items: center; justify-content: center;
+        /* Canvasを一番下のレイヤーに */
+        canvas { 
+            display: block; 
+            background: #111; 
+            border: 4px solid #333; 
+            max-width: 100%; 
+            height: auto; 
+            touch-action: none; 
+            z-index: 1; 
+            position: relative; 
             pointer-events: auto;
         }
-        .screen-layer.hidden { pointer-events: none; }
         
-        /* ボタン類を確実にクリック可能に */
+        .hidden { display: none !important; }
+        
+        /* 画面レイヤーをCanvasより確実に前面に */
+        .screen-layer { 
+            position: absolute; 
+            top: 0; left: 0; right: 0; bottom: 0; 
+            z-index: 50; 
+            display: flex; flex-direction: column; align-items: center; justify-content: center;
+            background: rgba(0,0,0,0.85);
+            pointer-events: auto; /* ここでクリックを許可 */
+        }
+        
+        /* UI要素（ボタン等）の設定 */
         button, input, label, [onclick] { 
             pointer-events: auto !important; 
-            z-index: 110 !important; 
+            z-index: 60 !important; 
             cursor: pointer;
             position: relative;
         }
 
+        /* ランク別カラー */
         .rank-SS { color: #f472b6; text-shadow: 0 0 5px #f472b6; }
         .rank-S { color: #facc15; } .rank-A { color: #f87171; } .rank-B { color: #60a5fa; }
         
@@ -458,39 +507,41 @@
     </style>
 </head>
 <body class="flex flex-col items-center justify-center min-h-screen">
-    <div id="ui-container" class="relative w-full max-w-[360px] h-[550px]">
-        <!-- TOP UI -->
-        <div class="p-2 flex justify-between items-center text-[10px] bg-black/50 absolute top-0 w-full z-[120]">
-            <div id="top-score">0 WINS | 🪙 0</div>
+    <div id="ui-container" class="relative w-full max-w-[360px] h-[550px] flex flex-col items-center overflow-hidden">
+        
+        <!-- TOP UI (Always visible) -->
+        <div class="p-2 flex justify-between items-center text-[10px] bg-black/70 absolute top-0 w-full z-[100]">
+            <div id="top-score">0 WINS | 🪙 100</div>
             <div id="player-title" onclick="window.openTitles()" class="text-yellow-400 underline">🐣駆け出し冒険者</div>
         </div>
 
-        <div class="relative mt-8">
+        <!-- 描画領域 -->
+        <div class="relative w-full h-[500px] mt-8 flex justify-center items-center">
             <canvas id="gameCanvas" width="360" height="500"></canvas>
             
             <!-- START -->
-            <div id="screen-start" class="screen-layer bg-black/80 p-6">
+            <div id="screen-start" class="screen-layer p-6">
                 <h1 class="text-2xl font-bold mb-6 text-green-400">QUEST & BATTLE</h1>
                 <input id="username-input" type="text" placeholder="名前を入力" class="w-full p-2 text-black rounded mb-4 text-center">
-                <button onclick="window.openDifficultySelect()" class="w-full p-4 bg-green-600 rounded mb-2 font-bold">クエスト開始</button>
-                <button onclick="window.goToBattleMode()" class="w-full p-4 bg-blue-600 rounded mb-2 font-bold">編成・バトル</button>
-                <button onclick="window.showScreen('gachaMain')" class="w-full p-2 bg-pink-600 rounded text-sm mb-2 font-bold">召喚(ガチャ)</button>
-                <button onclick="window.openShop()" class="w-full p-2 bg-yellow-600 rounded text-sm">ショップ</button>
+                <button onclick="window.openDifficultySelect()" class="w-full p-4 bg-green-600 rounded mb-2 font-bold shadow-lg hover:brightness-110 active:scale-95 transition-all">クエスト開始</button>
+                <button onclick="window.goToBattleMode()" class="w-full p-4 bg-blue-600 rounded mb-2 font-bold shadow-lg hover:brightness-110 active:scale-95 transition-all">編成・バトル</button>
+                <button onclick="window.showScreen('gachaMain')" class="w-full p-2 bg-pink-600 rounded text-sm mb-2 font-bold shadow-lg">召喚(ガチャ)</button>
+                <button onclick="window.openShop()" class="w-full p-2 bg-yellow-600 rounded text-sm shadow-lg">ショップ</button>
             </div>
 
             <!-- DIFFICULTY -->
-            <div id="screen-difficulty" class="screen-layer hidden bg-black/90 p-6">
-                <h2 class="mb-4 text-green-400">難易度を選択</h2>
+            <div id="screen-difficulty" class="screen-layer hidden p-6">
+                <h2 class="mb-4 text-green-400 font-bold">難易度を選択</h2>
                 <div class="flex flex-col gap-2 w-full">
-                    <button onclick="window.startQuest(0)" class="p-4 bg-blue-900 border border-blue-400 rounded">EASY</button>
-                    <button onclick="window.startQuest(1)" class="p-4 bg-yellow-900 border border-yellow-400 rounded">NORMAL</button>
-                    <button onclick="window.startQuest(2)" class="p-4 bg-red-900 border border-red-400 rounded">HARD</button>
+                    <button onclick="window.startQuest(0)" class="p-4 bg-blue-900 border border-blue-400 rounded hover:bg-blue-800 transition-colors">EASY</button>
+                    <button onclick="window.startQuest(1)" class="p-4 bg-yellow-900 border border-yellow-400 rounded hover:bg-yellow-800 transition-colors">NORMAL</button>
+                    <button onclick="window.startQuest(2)" class="p-4 bg-red-900 border border-red-400 rounded hover:bg-red-800 transition-colors">HARD</button>
                     <button onclick="window.resetGame()" class="mt-4 text-gray-400 underline">戻る</button>
                 </div>
             </div>
 
             <!-- GACHA MAIN -->
-            <div id="screen-gacha-main" class="screen-layer hidden bg-black/95 p-6 text-center">
+            <div id="screen-gacha-main" class="screen-layer hidden p-6 text-center">
                 <h2 class="text-xl text-pink-400 mb-4 font-bold">英雄召喚</h2>
                 <div id="gacha-animation-box" class="h-24 flex items-center justify-center mb-4"></div>
                 <div id="gacha-main-results" class="flex flex-wrap justify-center gap-2 mb-4 max-h-40 overflow-y-auto"></div>
@@ -502,7 +553,7 @@
             </div>
 
             <!-- FORMATION -->
-            <div id="screen-formation" class="screen-layer hidden bg-black/95 p-4">
+            <div id="screen-formation" class="screen-layer hidden p-4">
                 <h2 class="mb-2 text-blue-300 font-bold text-sm">チーム編成 (最大3人)</h2>
                 
                 <div class="flex gap-1 mb-2 w-full">
@@ -517,8 +568,8 @@
                 
                 <div class="flex gap-2 w-full">
                     <div class="flex-1 flex justify-around items-center bg-gray-800 rounded p-1 text-[10px]">
-                        <label class="flex items-center gap-1"><input type="radio" name="battleMode" value="auto" checked> AUTO</label>
-                        <label class="flex items-center gap-1"><input type="radio" name="battleMode" value="manual"> MANUAL</label>
+                        <label class="flex items-center gap-1 cursor-pointer"><input type="radio" name="battleMode" value="auto" checked> AUTO</label>
+                        <label class="flex items-center gap-1 cursor-pointer"><input type="radio" name="battleMode" value="manual"> MANUAL</label>
                     </div>
                 </div>
                 <div class="flex gap-2 w-full mt-2">
@@ -528,7 +579,7 @@
             </div>
 
             <!-- BATTLE -->
-            <div id="screen-battle" class="screen-layer hidden bg-black/80 py-4 flex flex-col items-center">
+            <div id="screen-battle" class="screen-layer hidden py-4 flex flex-col items-center">
                 <div id="battle-header" class="text-yellow-400 text-sm mb-4 font-bold"></div>
                 <div class="w-full flex flex-col items-center gap-4 flex-grow justify-center">
                     <div id="enemy-team-ui" class="flex gap-2"></div>
@@ -536,26 +587,26 @@
                     <div id="player-team-ui" class="flex gap-2"></div>
                 </div>
                 <div id="battle-log" class="w-[300px] h-20 bg-black/60 border border-gray-700 rounded p-2 overflow-y-auto mb-4 flex flex-col-reverse text-[9px]"></div>
-                <button id="battle-finish-btn" onclick="window.resetGame()" class="hidden px-8 py-2 bg-yellow-500 text-black font-bold rounded mb-4">終了</button>
+                <button id="battle-finish-btn" onclick="window.resetGame()" class="hidden px-8 py-2 bg-yellow-500 text-black font-bold rounded mb-4 shadow-xl">終了</button>
             </div>
 
             <!-- GACHA RESULT (AFTER QUEST) -->
-            <div id="screen-gacha" class="screen-layer hidden bg-black/90 p-4">
+            <div id="screen-gacha" class="screen-layer hidden p-4">
                 <h2 class="text-xl text-green-400 mb-2 font-bold">リザルト</h2>
                 <div id="quest-coins" class="text-yellow-400 mb-4 text-sm"></div>
                 <div id="gacha-result" class="flex flex-wrap justify-center gap-2 mb-6"></div>
-                <button onclick="window.goToBattleMode()" class="w-full py-3 bg-blue-600 rounded font-bold">編成へ</button>
+                <button onclick="window.goToBattleMode()" class="w-full py-3 bg-blue-600 rounded font-bold shadow-lg">編成へ</button>
             </div>
 
             <!-- SHOP -->
-            <div id="screen-shop" class="screen-layer hidden bg-black/95 p-4">
+            <div id="screen-shop" class="screen-layer hidden p-4">
                 <h2 class="mb-4 text-yellow-400 font-bold">強化ショップ</h2>
                 <div id="shop-items" class="flex flex-col gap-2 w-full mb-6"></div>
                 <button onclick="window.resetGame()" class="w-full py-2 bg-gray-600 rounded">戻る</button>
             </div>
             
             <!-- TITLES -->
-            <div id="screen-titles" class="screen-layer hidden bg-black/95 p-6">
+            <div id="screen-titles" class="screen-layer hidden p-6">
                 <h2 class="mb-4 text-yellow-400 font-bold">獲得称号</h2>
                 <div id="title-list" class="w-full flex flex-col bg-gray-900/50 rounded p-2 overflow-y-auto max-h-80"></div>
                 <button onclick="window.resetGame()" class="mt-6 px-8 py-2 bg-gray-700 rounded text-sm">戻る</button>
