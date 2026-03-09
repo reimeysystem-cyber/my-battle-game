@@ -3,29 +3,21 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>Character Get & Battle - Fixed Victory Logic</title>
+    <title>Character Get & Battle - Cloud Save Edition</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <script type="module">
         import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
         import { getAuth, signInAnonymously, onAuthStateChanged, signInWithCustomToken } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
-        import { getFirestore, doc, setDoc, onSnapshot, updateDoc, deleteDoc, getDoc, collection, addDoc, query, orderBy, serverTimestamp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+        import { getFirestore, doc, setDoc, getDoc, serverTimestamp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
 
-        // --- Firebase Configuration & Error Handling ---
+        // --- Firebase Configuration ---
         let app, auth, db;
-        const appId = typeof __app_id !== 'undefined' ? __app_id : "my-battle-app-v4";
+        const appId = typeof __app_id !== 'undefined' ? __app_id : "character-battle-save-v1";
 
-        try {
-            if (typeof __firebase_config !== 'undefined') {
-                const firebaseConfig = JSON.parse(__firebase_config);
-                app = initializeApp(firebaseConfig);
-                auth = getAuth(app);
-                db = getFirestore(app);
-            } else {
-                console.warn("Firebase config is not defined. Online features will be disabled.");
-            }
-        } catch (e) {
-            console.error("Firebase Initialization Error:", e);
-        }
+        const firebaseConfig = JSON.parse(__firebase_config);
+        app = initializeApp(firebaseConfig);
+        auth = getAuth(app);
+        db = getFirestore(app);
 
         // --- Game Variables ---
         let user = null;
@@ -62,94 +54,92 @@
             gacha: document.getElementById('screen-gacha'),
             formation: document.getElementById('screen-formation'),
             battle: document.getElementById('screen-battle'),
-            matching: document.getElementById('screen-matching'),
             difficulty: document.getElementById('screen-difficulty'),
             shop: document.getElementById('screen-shop'),
             titles: document.getElementById('screen-titles')
         };
 
-        // --- Helper: Create Character ---
-        function createCharacter(rank, owner = 'Player') {
-            const name = CHAR_NAMES[rand(CHAR_NAMES.length)];
-            const type = rand(4) === 0 ? 'healer' : 'attacker';
-            let hp = 100;
-            let atk = 10;
-            let mp = type === 'healer' ? 3 : 0;
-
-            if (rank === 'A') { hp = 150; atk = 20; }
-            if (rank === 'S') { hp = 250; atk = 35; mp = type === 'healer' ? 5 : 0; }
-
-            if (owner === 'Player') {
-                if (upgrades.atk) atk += 10;
-                if (upgrades.hp) hp += 30;
-            }
-
-            return {
-                id: Date.now() + Math.random().toString(36).substr(2, 9),
-                name,
-                rank,
-                type,
-                hp,
-                maxHp: hp,
-                currentHp: hp,
-                atk,
-                mp,
-                maxMp: mp
-            };
-        }
-
-        // --- Auth Initialization ---
-        const initAuth = async () => {
-            if (!auth) return;
+        // --- Firestore Save/Load Logic ---
+        async function loadUserData(uid) {
             try {
-                if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
-                    await signInWithCustomToken(auth, __initial_auth_token);
-                } else {
-                    await signInAnonymously(auth);
-                }
-            } catch (e) { console.error("Auth Init Error:", e); }
-        };
-        initAuth();
-
-        if (auth) {
-            onAuthStateChanged(auth, (u) => { 
-                user = u;
-                if (u) loadUserData();
-            });
-        }
-
-        async function loadUserData() {
-            if (!user || !db) return;
-            try {
-                const userRef = doc(db, 'artifacts', appId, 'users', user.uid, 'profile', 'data');
+                // RULE 1: Specific Path for user private data
+                const userRef = doc(db, 'artifacts', appId, 'users', uid, 'data', 'profile');
                 const snap = await getDoc(userRef);
                 if (snap.exists()) {
                     const data = snap.data();
                     winCount = data.winCount || 0;
                     totalCoins = data.totalCoins || 0;
                     upgrades = data.upgrades || { atk: 0, hp: 0 };
-                    updateMainUI();
+                    // 同時にキャラクターも保存したい場合はここに含める
+                    if (data.myCharacters) {
+                        myCharacters = data.myCharacters;
+                        localStorage.setItem('myChars', JSON.stringify(myCharacters));
+                    }
                 }
-            } catch (error) { console.error("Data Load Error:", error); }
+                updateMainUI();
+            } catch (e) {
+                console.error("Load Error:", e);
+            }
         }
 
         async function saveUserData() {
-            if (!user || !db) return;
+            if (!user) return;
             try {
-                const userRef = doc(db, 'artifacts', appId, 'users', user.uid, 'profile', 'data');
-                await setDoc(userRef, { 
-                    winCount, 
-                    totalCoins, 
+                // RULE 1: Specific Path
+                const userRef = doc(db, 'artifacts', appId, 'users', user.uid, 'data', 'profile');
+                await setDoc(userRef, {
+                    winCount,
+                    totalCoins,
                     upgrades,
-                    lastUpdated: serverTimestamp() 
+                    myCharacters, // 全キャラリストも保存
+                    lastUpdated: serverTimestamp()
                 }, { merge: true });
                 updateMainUI();
-            } catch (error) { console.error("Data Save Error:", error); }
+            } catch (e) {
+                console.error("Save Error:", e);
+            }
+        }
+
+        // --- Auth Initialization (RULE 3) ---
+        const initAuth = async () => {
+            try {
+                if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
+                    await signInWithCustomToken(auth, __initial_auth_token);
+                } else {
+                    await signInAnonymously(auth);
+                }
+            } catch (e) { console.error("Auth Error:", e); }
+        };
+
+        onAuthStateChanged(auth, (u) => {
+            user = u;
+            if (u) loadUserData(u.uid);
+        });
+
+        initAuth();
+
+        // --- Game Logic ---
+        function createCharacter(rank, owner = 'Player') {
+            const name = CHAR_NAMES[rand(CHAR_NAMES.length)];
+            const type = rand(4) === 0 ? 'healer' : 'attacker';
+            let hp = 100;
+            let atk = 10;
+            let mp = type === 'healer' ? 3 : 0;
+            if (rank === 'A') { hp = 150; atk = 20; }
+            if (rank === 'S') { hp = 250; atk = 35; mp = type === 'healer' ? 5 : 0; }
+            if (owner === 'Player') {
+                if (upgrades.atk) atk += 10;
+                if (upgrades.hp) hp += 30;
+            }
+            return {
+                id: Date.now() + Math.random().toString(36).substr(2, 9),
+                name, rank, type, hp, maxHp: hp, currentHp: hp, atk, mp, maxMp: mp
+            };
         }
 
         function updateMainUI() {
             const scoreDisp = document.getElementById('top-score');
-            if (scoreDisp) scoreDisp.innerText = `WINS: ${winCount} | 🪙 ${totalCoins}`;
+            if (scoreDisp) scoreDisp.innerText = `${winCount} WINS | 🪙 ${totalCoins}`;
             const titleDisp = document.getElementById('player-title');
             if (titleDisp) titleDisp.innerText = getTitle().text;
         }
@@ -262,7 +252,7 @@
         async function endQuest() { 
             cancelAnimationFrame(gameLoop); 
             totalCoins += collectedCoins;
-            await saveUserData();
+            await saveUserData(); // コイン保存
             showGacha(); 
         }
 
@@ -280,6 +270,7 @@
                 resultDiv.appendChild(card);
             });
             localStorage.setItem('myChars', JSON.stringify(myCharacters));
+            saveUserData(); // キャラクターリストも保存
             document.getElementById('quest-coins').innerText = `獲得コイン: +${collectedCoins}`;
             updateMainUI();
         }
@@ -416,31 +407,16 @@
 
         function startSoloTurn() { if (checkWinCondition()) return; isMyTurn = true; selectedActorIdx = -1; updateBattleUI(); }
 
-        // --- FIXED WIN CONDITION LOGIC ---
         function checkWinCondition() {
             const pAlive = selectedTeam.filter(c => c.currentHp > 0);
             const eAlive = enemies.filter(c => c.currentHp > 0);
-            
-            // 1. 敵全滅判定
-            if (eAlive.length === 0 && enemies.length > 0) { 
-                finishBattle(true); 
-                return true; 
-            }
-            // 2. 味方全滅判定
-            if (pAlive.length === 0 && selectedTeam.length > 0) { 
-                finishBattle(false); 
-                return true; 
-            }
-            // 3. タイムアップ（ターン切れ）判定
+            if (eAlive.length === 0 && enemies.length > 0) { finishBattle(true); return true; }
+            if (pAlive.length === 0 && selectedTeam.length > 0) { finishBattle(false); return true; }
             if (currentTurnCount >= MAX_TURNS) {
                 log("タイムアップ！生存数で判定します。");
-                // 生存数が多いほうが勝ち
-                if (pAlive.length > eAlive.length) {
-                    finishBattle(true);
-                } else if (eAlive.length > pAlive.length) {
-                    finishBattle(false);
-                } else {
-                    // 生存数が同じなら残りHPの合計で判定
+                if (pAlive.length > eAlive.length) finishBattle(true);
+                else if (eAlive.length > pAlive.length) finishBattle(false);
+                else {
                     const pTotalHp = pAlive.reduce((sum, c) => sum + c.currentHp, 0);
                     const eTotalHp = eAlive.reduce((sum, c) => sum + c.currentHp, 0);
                     finishBattle(pTotalHp >= eTotalHp);
@@ -539,7 +515,7 @@
                 winCount = 0; 
                 log("××× 敗北... ×××"); 
             }
-            await saveUserData();
+            await saveUserData(); // 勝利数とコインを保存
         }
 
         window.resetGame = () => { showScreen('start'); if (gameLoop) cancelAnimationFrame(gameLoop); };
@@ -581,7 +557,7 @@
 <body class="flex flex-col items-center justify-center min-h-screen">
     <div id="ui-container" class="relative w-full max-w-[360px]">
         <div class="p-2 flex justify-between items-center text-[10px] bg-black/50">
-            <div>WINS: <span id="top-score">0</span></div>
+            <div id="top-score">0 WINS | 🪙 0</div>
             <div id="player-title" onclick="window.openTitles()" class="text-yellow-400 underline">🐣駆け出し冒険者</div>
         </div>
 
