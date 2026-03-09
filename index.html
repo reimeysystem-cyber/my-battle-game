@@ -45,7 +45,6 @@
         let currentTurnCount = 0;
         const MAX_TURNS = 20;
 
-        // Multiplayer Vars
         let roomId = "";
         let playerRole = ""; 
         let unsubscribeRoom = null;
@@ -65,14 +64,21 @@
         };
 
         const initAuth = async () => {
-            if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
-                await signInWithCustomToken(auth, __initial_auth_token);
-            } else {
-                await signInAnonymously(auth);
+            try {
+                if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
+                    await signInWithCustomToken(auth, __initial_auth_token);
+                } else {
+                    await signInAnonymously(auth);
+                }
+            } catch (e) {
+                console.error("Auth failed", e);
             }
         };
 
-        onAuthStateChanged(auth, (u) => { user = u; });
+        onAuthStateChanged(auth, (u) => { 
+            user = u; 
+            console.log("User state updated:", u ? u.uid : "no user");
+        });
         initAuth();
 
         function rand(n) { return Math.floor(Math.random() * n); }
@@ -85,7 +91,8 @@
             }
             if (screenName === 'formation') renderCollection();
             if (screenName === 'battle') {
-                document.getElementById('battle-log').innerHTML = '';
+                const logEl = document.getElementById('battle-log');
+                if (logEl) logEl.innerHTML = '';
                 log("バトル開始！");
             }
         }
@@ -106,7 +113,7 @@
             };
         }
 
-        // --- QUEST MODE ---
+        // --- Window Globals ---
         window.openDifficultySelect = () => {
             const nameInput = document.getElementById('username-input');
             if (nameInput.value.trim()) userName = nameInput.value.trim();
@@ -142,10 +149,7 @@
             }
             
             ctx.fillStyle = '#4ade80'; 
-            ctx.shadowBlur = 10;
-            ctx.shadowColor = '#4ade80';
             ctx.fillRect(playerX, 420, 40, 40);
-            ctx.shadowBlur = 0;
 
             for (let i = obstacles.length - 1; i >= 0; i--) {
                 let o = obstacles[i]; o.y += baseSpeed;
@@ -167,11 +171,6 @@
                     collectedCards.push(item.rank); items.splice(i, 1);
                 } else if (item.y > canvas.height) items.splice(i, 1);
             }
-
-            ctx.fillStyle = "#333";
-            ctx.fillRect(10, 10, canvas.width - 20, 5);
-            ctx.fillStyle = "#fbbf24";
-            ctx.fillRect(10, 10, (canvas.width - 20) * (frameCount / 1200), 5);
 
             if (frameCount >= 1200) endQuest(); else gameLoop = requestAnimationFrame(update);
         }
@@ -202,27 +201,38 @@
 
         function renderCollection() {
             const list = document.getElementById('collection-list');
+            if (!list) return;
             list.innerHTML = '';
             myCharacters.forEach(char => {
                 const isSelected = selectedTeam.some(t => t.id === char.id);
                 const item = document.createElement('div');
-                item.className = `p-1 cursor-pointer border-2 ${isSelected ? 'border-yellow-400 bg-gray-700' : 'border-gray-800 bg-gray-900'} text-[10px] rounded`;
+                item.className = `p-1 cursor-pointer border-2 ${isSelected ? 'border-yellow-400 bg-gray-700' : 'border-gray-800 bg-gray-900'} text-[10px] rounded transition-colors`;
                 item.innerHTML = `<span class="rank-${char.rank} font-bold">RANK ${char.rank}</span><br>${char.name}<br>HP:${char.hp} ATK:${char.atk}`;
                 item.onclick = () => {
                     const idx = selectedTeam.findIndex(t => t.id === char.id);
-                    if (idx > -1) selectedTeam.splice(idx, 1);
-                    else if (selectedTeam.length < 3) selectedTeam.push({...char});
+                    if (idx > -1) {
+                        selectedTeam.splice(idx, 1);
+                    } else if (selectedTeam.length < 3) {
+                        selectedTeam.push({...char});
+                    }
                     renderCollection();
                 };
                 list.appendChild(item);
             });
-            document.getElementById('battle-btn').disabled = selectedTeam.length === 0;
+            const bBtn = document.getElementById('battle-btn');
+            if (bBtn) bBtn.disabled = selectedTeam.length === 0;
         }
 
         window.startBattleAction = async () => {
-            if (!user) return;
+            // 認証がまだの場合は待つ（通常は既に完了しているはずだが念のため）
+            if (!user) {
+                console.log("Waiting for auth...");
+                await initAuth();
+            }
+            
             currentTurnCount = 1;
-            battleMode = document.querySelector('input[name="battleMode"]:checked').value;
+            const modeInput = document.querySelector('input[name="battleMode"]:checked');
+            battleMode = modeInput ? modeInput.value : 'auto';
             roomId = document.getElementById('room-id-input').value.trim();
 
             if (battleMode === 'multi') {
@@ -376,7 +386,8 @@
             const eUI = document.getElementById('enemy-team-ui');
             if (!pUI || !eUI) return;
             pUI.innerHTML = ''; eUI.innerHTML = '';
-            document.getElementById('battle-header').innerText = `TURN ${currentTurnCount} / ${MAX_TURNS}`;
+            const head = document.getElementById('battle-header');
+            if (head) head.innerText = `TURN ${currentTurnCount} / ${MAX_TURNS}`;
             
             const renderCard = (c, idx, isEnemy) => {
                 const div = document.createElement('div');
@@ -443,14 +454,15 @@
             isMyTurn = false; 
             const btn = document.getElementById('battle-finish-btn');
             if (btn) btn.classList.remove('hidden');
+            const scoreDisp = document.getElementById('top-score');
             if (isWin) { 
                 winCount++; 
-                document.getElementById('top-score').innerText = `WINS: ${winCount}`; 
-                log("VICTORY"); 
+                if (scoreDisp) scoreDisp.innerText = `WINS: ${winCount}`; 
+                log("★ 勝利！ おめでとう！ ★"); 
             } else { 
                 winCount = 0; 
-                document.getElementById('top-score').innerText = `WINS: 0`; 
-                log("LOSE..."); 
+                if (scoreDisp) scoreDisp.innerText = `WINS: 0`; 
+                log("× 敗北... 修行し直そう ×"); 
             }
             if (unsubscribeRoom) unsubscribeRoom();
         }
@@ -466,11 +478,6 @@
             if (e.key === 'ArrowLeft') playerX = Math.max(0, playerX - 30);
             if (e.key === 'ArrowRight') playerX = Math.min(canvas.width - 40, playerX + 30);
         });
-        canvas.addEventListener('touchstart', e => {
-            if (gameState !== 'playing') return;
-            const tx = e.touches[0].clientX - canvas.getBoundingClientRect().left;
-            playerX = tx < canvas.width / 2 ? Math.max(0, playerX - 45) : Math.min(canvas.width - 40, playerX + 45);
-        });
 
         window.onload = () => showScreen('start');
     </script>
@@ -484,9 +491,6 @@
         .target-glow { animation: glow 1s infinite alternate; }
         @keyframes glow { from { border-color: #555; } to { border-color: #fff; box-shadow: 0 0 8px #fff; } }
         .hidden { display: none !important; }
-        #battle-log::-webkit-scrollbar { width: 4px; }
-        #battle-log::-webkit-scrollbar-track { background: transparent; }
-        #battle-log::-webkit-scrollbar-thumb { background: #444; border-radius: 2px; }
     </style>
 </head>
 <body class="flex flex-col items-center justify-center min-h-screen">
@@ -502,8 +506,8 @@
             <div id="screen-start" class="absolute inset-0 flex flex-col items-center justify-center bg-black/80 p-6">
                 <input id="username-input" type="text" maxlength="10" placeholder="Player Name" class="w-full p-2 text-black rounded text-sm text-center mb-6">
                 <div class="grid grid-cols-2 gap-4 w-full mb-8">
-                    <button onclick="openDifficultySelect()" class="p-4 bg-green-700 hover:bg-green-600 rounded-lg border-2 border-green-400 font-bold shadow-lg shadow-green-900/50">QUEST</button>
-                    <button onclick="goToBattleMode()" class="p-4 bg-red-700 hover:bg-red-600 rounded-lg border-2 border-red-400 font-bold shadow-lg shadow-red-900/50">BATTLE</button>
+                    <button onclick="window.openDifficultySelect()" class="p-4 bg-green-700 hover:bg-green-600 rounded-lg border-2 border-green-400 font-bold shadow-lg">QUEST</button>
+                    <button onclick="window.goToBattleMode()" class="p-4 bg-red-700 hover:bg-red-600 rounded-lg border-2 border-red-400 font-bold shadow-lg">BATTLE</button>
                 </div>
             </div>
 
@@ -511,10 +515,10 @@
             <div id="screen-difficulty" class="absolute inset-0 hidden flex flex-col items-center justify-center bg-black/90 p-6">
                 <h2 class="text-lg mb-6 text-green-400">SELECT DIFFICULTY</h2>
                 <div class="flex flex-col gap-4 w-full">
-                    <button onclick="startQuest(0)" class="p-3 bg-blue-900 border border-blue-400 rounded hover:bg-blue-800">EASY</button>
-                    <button onclick="startQuest(1)" class="p-3 bg-yellow-900 border border-yellow-400 rounded hover:bg-yellow-800">NORMAL</button>
-                    <button onclick="startQuest(2)" class="p-3 bg-red-900 border border-red-400 rounded hover:bg-red-800">HARD</button>
-                    <button onclick="resetGame()" class="mt-4 p-2 text-sm text-gray-400 underline">BACK</button>
+                    <button onclick="window.startQuest(0)" class="p-3 bg-blue-900 border border-blue-400 rounded">EASY</button>
+                    <button onclick="window.startQuest(1)" class="p-3 bg-yellow-900 border border-yellow-400 rounded">NORMAL</button>
+                    <button onclick="window.startQuest(2)" class="p-3 bg-red-900 border border-red-400 rounded">HARD</button>
+                    <button onclick="window.resetGame()" class="mt-4 p-2 text-sm text-gray-400 underline">BACK</button>
                 </div>
             </div>
 
@@ -522,13 +526,13 @@
             <div id="screen-gacha" class="absolute inset-0 hidden flex flex-col items-center justify-center bg-black/90 p-4">
                 <h2 class="text-xl mb-4 text-green-400">CARDS GET!</h2>
                 <div id="gacha-result" class="flex flex-wrap justify-center gap-2 mb-6"></div>
-                <button onclick="goToBattleMode()" class="w-full py-3 bg-blue-600 rounded font-bold">TEAM SETTINGS</button>
+                <button onclick="window.goToBattleMode()" class="w-full py-3 bg-blue-600 rounded font-bold">TEAM SETTINGS</button>
             </div>
 
             <!-- FORMATION SCREEN -->
             <div id="screen-formation" class="absolute inset-0 hidden flex flex-col items-center justify-center bg-black/95 p-4">
                 <h2 class="text-lg mb-2 text-blue-300">TEAM (MAX 3)</h2>
-                <div id="collection-list" class="grid grid-cols-3 gap-2 w-full max-h-48 overflow-y-auto mb-4 bg-gray-900 p-2 border border-gray-600 rounded shadow-inner"></div>
+                <div id="collection-list" class="grid grid-cols-3 gap-2 w-full max-h-48 overflow-y-auto mb-4 bg-gray-900 p-2 border border-gray-600 rounded"></div>
                 
                 <div class="bg-gray-800 p-3 rounded mb-4 w-full border border-gray-600">
                     <div class="flex justify-around text-xs mb-3">
@@ -540,8 +544,8 @@
                 </div>
 
                 <div class="flex gap-2 w-full">
-                    <button onclick="resetGame()" class="flex-1 py-2 bg-gray-600 rounded text-sm hover:bg-gray-500">BACK</button>
-                    <button id="battle-btn" onclick="startBattleAction()" class="flex-[2] py-2 bg-red-600 font-bold rounded text-sm hover:bg-red-500 disabled:bg-gray-700">START BATTLE</button>
+                    <button onclick="window.resetGame()" class="flex-1 py-2 bg-gray-600 rounded text-sm">BACK</button>
+                    <button id="battle-btn" onclick="window.startBattleAction()" class="flex-[2] py-2 bg-red-600 font-bold rounded text-sm hover:bg-red-500 disabled:opacity-50 disabled:bg-gray-700" disabled>START BATTLE</button>
                 </div>
             </div>
 
@@ -553,21 +557,15 @@
             <!-- BATTLE SCREEN -->
             <div id="screen-battle" class="absolute inset-0 hidden flex flex-col items-center justify-between bg-black/80 py-4">
                 <div id="battle-header" class="text-center text-yellow-400 text-sm font-bold bg-black/50 w-full py-1"></div>
-                
                 <div class="flex flex-col gap-4 w-full px-2">
                     <div id="enemy-team-ui" class="flex justify-center gap-2"></div>
-                    <div class="relative flex items-center justify-center">
-                        <div class="absolute w-full h-[1px] bg-white/10"></div>
-                        <div class="z-10 bg-black px-4 text-white/40 text-[10px]">VERSUS</div>
-                    </div>
+                    <div class="relative flex items-center justify-center"><div class="absolute w-full h-[1px] bg-white/10"></div><div class="z-10 bg-black px-4 text-white/40 text-[10px]">VERSUS</div></div>
                     <div id="player-team-ui" class="flex justify-center gap-2"></div>
                 </div>
-
                 <div class="w-full px-2 mt-4">
                     <div id="battle-log" class="text-[10px] h-32 overflow-y-auto w-full px-3 text-gray-200 bg-black/60 py-2 border border-white/10 rounded"></div>
                 </div>
-
-                <button id="battle-finish-btn" onclick="resetGame()" class="hidden mx-auto mt-4 px-10 py-2 bg-yellow-500 text-black font-bold rounded hover:bg-yellow-400">DONE</button>
+                <button id="battle-finish-btn" onclick="window.resetGame()" class="hidden mx-auto mt-4 px-10 py-2 bg-yellow-500 text-black font-bold rounded">DONE</button>
             </div>
         </div>
     </div>
