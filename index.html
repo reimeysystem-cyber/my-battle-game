@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>Character Get & Battle - Responsive Fix</title>
+    <title>Character Get & Battle - Role Visibility Update</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <script type="module">
         import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
@@ -42,7 +42,7 @@
         let user = null;
         let userName = localStorage.getItem('pName') || "Player";
         let winCount = 0;
-        let totalCoins = 100; // 初期コイン
+        let totalCoins = 500;
         let upgrades = { atk: 0, hp: 0 };
         let gameState = 'start';
         let playerX = 160;
@@ -64,7 +64,7 @@
         let currentFilter = 'ALL';
         const MAX_TURNS = 20;
 
-        const CHAR_NAMES = ["Knight", "Mage", "Thief", "Dragon", "Elf", "Ogre", "Slime", "Hero", "Priest", "Angel", "Devil", "Valkyrie"];
+        const CHAR_NAMES = ["Knight", "Mage", "Thief", "Dragon", "Elf", "Ogre", "Slime", "Hero", "Priest", "Angel", "Devil", "Valkyrie", "Creator", "System"];
         const RANKS = ["B", "B", "B", "B", "A", "A", "S"];
 
         // --- Functions ---
@@ -105,9 +105,12 @@
             const name = CHAR_NAMES[rand(CHAR_NAMES.length)];
             const type = rand(4) === 0 ? 'healer' : 'attacker';
             let hp = 100, atk = 10, mp = type === 'healer' ? 3 : 0;
+            
             if (rank === 'A') { hp = 150; atk = 20; }
             else if (rank === 'S') { hp = 250; atk = 35; mp += 2; }
             else if (rank === 'SS') { hp = 450; atk = 60; mp += 5; }
+            else if (rank === 'ADMIN') { hp = 999; atk = 150; mp += 10; }
+            
             if (owner === 'Player') {
                 if (upgrades.atk) atk += 10;
                 if (upgrades.hp) hp += 30;
@@ -119,7 +122,7 @@
         }
 
         function addCharacterToCollection(newChar) {
-            const existing = myCharacters.find(c => c.name === newChar.name && c.rank === newChar.rank);
+            const existing = myCharacters.find(c => c.name === newChar.name && c.rank === newChar.rank && c.type === newChar.type);
             if (existing) {
                 existing.level = (existing.level || 1) + 1;
                 existing.hp += Math.floor(existing.maxHp * 0.1);
@@ -130,6 +133,35 @@
                 myCharacters.push(newChar);
                 return { char: newChar, isNew: true };
             }
+        }
+
+        function generateCardHTML(char, isNew = false, size = 'normal') {
+            const sizeClass = size === 'large' ? 'w-24 h-32' : 'w-20 h-28';
+            const rankLabel = char.rank === 'ADMIN' ? 'GOD' : char.rank;
+            const roleLabel = char.type === 'healer' ? '癒' : '攻';
+            const roleColor = char.type === 'healer' ? 'text-green-400' : 'text-red-400';
+            
+            return `
+                <div class="card-container ${char.rank} ${sizeClass} p-1 rounded-md text-center flex flex-col justify-between shadow-lg relative overflow-hidden">
+                    ${isNew ? '<div class="absolute top-0 right-0 bg-red-600 text-[8px] px-1 z-10 animate-pulse">NEW</div>' : ''}
+                    <div class="text-[14px] font-black leading-tight rank-text">${rankLabel}</div>
+                    <div class="text-[9px] font-bold truncate">${char.name}</div>
+                    
+                    <div class="flex-grow flex flex-col items-center justify-center">
+                        <div class="text-xl">
+                            ${char.rank === 'ADMIN' ? '💠' : (char.rank === 'SS' ? '💎' : (char.rank === 'S' ? '🔥' : '⚔️'))}
+                        </div>
+                        <div class="text-[10px] font-black ${roleColor} border border-current px-1 mt-1 rounded bg-black/50">
+                            ${roleLabel}
+                        </div>
+                    </div>
+
+                    <div class="text-[8px] bg-black/40 rounded py-0.5">
+                        ${char.type === 'healer' ? '回復' : '攻撃'}:${char.atk}<br>HP:${char.currentHp !== undefined ? char.currentHp : char.hp}
+                    </div>
+                    <div class="text-[7px] text-gray-300">Lv.${char.level}</div>
+                </div>
+            `;
         }
 
         window.showScreen = (screenName) => {
@@ -154,26 +186,42 @@
 
         window.pullGacha = (count) => {
             const cost = count * 100;
-            if (totalCoins < cost) return;
+            if (totalCoins < cost) {
+                const msg = document.getElementById('gacha-msg');
+                if(msg) {
+                    msg.innerText = "コインが足りません！";
+                    setTimeout(() => msg.innerText = "", 2000);
+                }
+                return;
+            }
             totalCoins -= cost;
-            window.showScreen('gachaMain');
+            
+            window.showScreen('gacha-main');
+            
             const box = document.getElementById('gacha-animation-box');
             const resultArea = document.getElementById('gacha-main-results');
-            box.innerHTML = '<div class="gacha-egg">🥚</div>';
+            box.innerHTML = '<div class="text-6xl animate-bounce">🥚</div>';
             resultArea.innerHTML = '';
+            
             setTimeout(() => {
-                box.innerHTML = '<div class="gacha-flash"></div>';
+                box.innerHTML = '<div class="w-full h-full bg-white animate-pulse rounded-full shadow-[0_0_50px_rgba(255,255,255,1)]"></div>';
                 setTimeout(() => {
-                    box.innerHTML = '';
+                    box.innerHTML = '<div class="text-6xl animate-ping">✨</div>';
                     for(let i=0; i<count; i++) {
                         const roll = Math.random();
-                        let rank = roll < 0.02 ? 'SS' : (roll < 0.10 ? 'S' : (roll < 0.30 ? 'A' : 'B'));
+                        let rank = 'B';
+                        if (roll < 0.001) rank = 'ADMIN'; 
+                        else if (roll < 0.02) rank = 'SS';
+                        else if (roll < 0.10) rank = 'S';
+                        else if (roll < 0.35) rank = 'A';
+                        
                         const newChar = createCharacter(rank);
                         const { char, isNew } = addCharacterToCollection(newChar);
-                        const card = document.createElement('div');
-                        card.className = `p-2 bg-gray-800 border-2 border-gray-600 w-24 text-center text-[10px] rank-${char.rank} rounded shadow-lg animate-bounce`;
-                        card.innerHTML = `<span class="font-bold text-xs">RANK ${char.rank}</span><br>${char.type==='healer'?'[癒]':'[攻]'} ${char.name}<br>${isNew?'NEW!':`Lv.${char.level}`}`;
-                        resultArea.appendChild(card);
+                        
+                        const wrapper = document.createElement('div');
+                        wrapper.className = "animate-in fade-in zoom-in duration-500";
+                        wrapper.innerHTML = generateCardHTML(char, isNew, 'large');
+                        resultArea.appendChild(wrapper);
                     }
                     saveUserData();
                 }, 500);
@@ -188,10 +236,10 @@
         }
 
         const TITLE_LIST = [
+            { text: "🌟システム管理者", check: () => myCharacters.some(c => c.rank === 'ADMIN') },
             { text: "👑不敗の覇者", check: () => winCount >= 50 },
             { text: "⚔️ベテラン騎士", check: () => winCount >= 20 },
             { text: "💰大富豪", check: () => totalCoins >= 1000 },
-            { text: "🛡️究極超人", check: () => upgrades.atk && upgrades.hp },
             { text: "🐣駆け出し冒険者", check: () => true }
         ];
 
@@ -260,17 +308,16 @@
         async function endQuest() { cancelAnimationFrame(gameLoop); totalCoins += collectedCoins; showGachaResult(); }
 
         function showGachaResult() {
-            window.showScreen('gacha');
+            window.showScreen('gacha-result-screen');
             const resultDiv = document.getElementById('gacha-result');
             resultDiv.innerHTML = '';
             if (collectedCards.length === 0) collectedCards.push('B');
             collectedCards.forEach(rank => {
                 const newChar = createCharacter(rank);
                 const { char, isNew } = addCharacterToCollection(newChar);
-                const card = document.createElement('div');
-                card.className = `p-2 bg-gray-800 border-2 border-gray-600 w-20 text-center text-[10px] rank-${char.rank} rounded`;
-                card.innerHTML = `<span class="font-bold text-xs">${char.rank}</span><br>${char.name}<br>${isNew?'NEW!':'UP!'}`;
-                resultDiv.appendChild(card);
+                const wrapper = document.createElement('div');
+                wrapper.innerHTML = generateCardHTML(char, isNew);
+                resultDiv.appendChild(wrapper);
             });
             saveUserData();
             document.getElementById('quest-coins').innerText = `獲得コイン: +${collectedCoins}`;
@@ -295,17 +342,17 @@
             if (filteredChars.length === 0) { list.innerHTML = '<div class="col-span-3 text-center py-10 text-gray-500 text-xs">なし</div>'; }
             filteredChars.forEach(char => {
                 const isSelected = selectedTeam.some(t => t.id === char.id);
-                const item = document.createElement('div');
-                item.className = `p-1 cursor-pointer border-2 ${isSelected ? 'border-yellow-400 bg-gray-700' : 'border-gray-800 bg-gray-900'} text-[10px] rounded`;
-                item.innerHTML = `<span class="rank-${char.rank} font-bold">${char.rank}</span> ${char.type==='healer'?'[癒]':'[攻]'}<br>${char.name}<br>Lv.${char.level}`;
-                item.onclick = (e) => {
+                const wrapper = document.createElement('div');
+                wrapper.className = `cursor-pointer rounded-md border-2 ${isSelected ? 'border-yellow-400 scale-105 transition-transform' : 'border-transparent'}`;
+                wrapper.innerHTML = generateCardHTML(char);
+                wrapper.onclick = (e) => {
                     e.stopPropagation();
                     const idx = selectedTeam.findIndex(t => t.id === char.id);
                     if (idx > -1) selectedTeam.splice(idx, 1);
                     else if (selectedTeam.length < 3) selectedTeam.push({...char, currentHp: char.hp, maxHp: char.hp, mp: char.maxMp});
                     renderCollection();
                 };
-                list.appendChild(item);
+                list.appendChild(wrapper);
             });
             const btn = document.getElementById('battle-btn');
             if(btn) btn.disabled = selectedTeam.length === 0;
@@ -380,9 +427,11 @@
                     if (actor.type === 'healer' && actor.mp > 0) {
                         const target = aliveSide[rand(aliveSide.length)];
                         target.currentHp = Math.min(target.maxHp, target.currentHp + actor.atk); actor.mp--;
+                        addLog(`${actor.name}は${target.name}を回復！`, "text-green-400");
                     } else if (aliveOpp.length > 0) {
                         const target = aliveOpp[rand(aliveOpp.length)];
                         target.currentHp = Math.max(0, target.currentHp - actor.atk);
+                        addLog(`${actor.name}の攻撃！`, isP ? "text-blue-300" : "text-red-300");
                     }
                 }
                 currentTurnCount++; updateBattleUI();
@@ -407,15 +456,34 @@
             const header = document.getElementById('battle-header');
             if(header) header.innerText = `TURN ${currentTurnCount}/${MAX_TURNS}`;
             const render = (c, i, isE) => {
-                const d = document.createElement('div');
+                const wrapper = document.createElement('div');
                 const isSelected = !isE && selectedActorIdx === i;
-                d.className = `w-20 p-1 bg-gray-800 border-2 ${c.currentHp<=0?'opacity-30':'border-gray-500'} ${isSelected ? 'border-yellow-400' : ''} text-[10px] text-center rounded relative cursor-pointer`;
-                d.onclick = () => {
-                    if (isE) { if(isMyTurn && selectedActorIdx!==-1) handleSoloAction(selectedActorIdx, i, true); }
-                    else { if(isMyTurn) { selectedActorIdx = i; updateBattleUI(); } }
+                wrapper.className = `w-20 ${c.currentHp<=0?'opacity-30':''} ${isSelected ? 'scale-110' : ''} transition-all cursor-pointer`;
+                wrapper.innerHTML = generateCardHTML(c);
+                wrapper.onclick = () => {
+                    if (isE) { 
+                        if(isMyTurn && selectedActorIdx!==-1) {
+                            const actor = selectedTeam[selectedActorIdx];
+                            if(actor.type === 'healer') {
+                                // ヒーラーは敵をタップしても自分や味方を対象にする（本来は味方タップで回復が良いがシンプル化）
+                                handleSoloAction(selectedActorIdx, selectedActorIdx, false); 
+                            } else {
+                                handleSoloAction(selectedActorIdx, i, true); 
+                            }
+                        }
+                    }
+                    else { 
+                        if(isMyTurn) { 
+                            if(selectedActorIdx === i && selectedTeam[i].type === 'healer') {
+                                handleSoloAction(i, i, false); // 自分を回復
+                            } else {
+                                selectedActorIdx = i; 
+                            }
+                            updateBattleUI(); 
+                        } 
+                    }
                 };
-                d.innerHTML = `<span class="rank-${c.rank}">${c.rank}</span><br>${c.name}<br>HP:${Math.floor(c.currentHp)}`;
-                return d;
+                return wrapper;
             };
             selectedTeam.forEach((c,i)=>pUI.appendChild(render(c,i,false)));
             enemies.forEach((c,i)=>eUI.appendChild(render(c,i,true)));
@@ -423,15 +491,32 @@
 
         function handleSoloAction(a, t, isE) {
             isMyTurn = false;
-            const actor = selectedTeam[a], target = enemies[t];
-            target.currentHp = Math.max(0, target.currentHp - actor.atk);
-            addLog(`${actor.name}の攻撃！`, "text-blue-300");
+            const actor = selectedTeam[a];
+            if(actor.type === 'healer' && actor.mp > 0) {
+                const target = selectedTeam[t];
+                target.currentHp = Math.min(target.maxHp, target.currentHp + actor.atk);
+                actor.mp--;
+                addLog(`${actor.name}の回復！`, "text-green-400");
+            } else {
+                const target = enemies[t];
+                target.currentHp = Math.max(0, target.currentHp - actor.atk);
+                addLog(`${actor.name}の攻撃！`, "text-blue-300");
+            }
             currentTurnCount++; updateBattleUI();
             if (!checkWinCondition()) setTimeout(() => {
                 const eA = enemies.filter(c=>c.currentHp>0);
                 if(eA.length){
                     const ea=eA[rand(eA.length)], ta=selectedTeam.filter(c=>c.currentHp>0)[rand(selectedTeam.filter(c=>c.currentHp>0).length)];
-                    if(ta) ta.currentHp=Math.max(0,ta.currentHp-ea.atk);
+                    if(ta) {
+                        if(ea.type === 'healer' && ea.mp > 0) {
+                            const et = eA[rand(eA.length)];
+                            et.currentHp = Math.min(et.maxHp, et.currentHp + ea.atk); ea.mp--;
+                            addLog(`敵${ea.name}の回復！`, "text-green-600");
+                        } else {
+                            ta.currentHp=Math.max(0,ta.currentHp-ea.atk);
+                            addLog(`敵${ea.name}の攻撃！`, "text-red-300");
+                        }
+                    }
                 }
                 updateBattleUI(); if(!checkWinCondition()) startSoloTurn();
             }, 600);
@@ -466,7 +551,6 @@
         @import url('https://fonts.googleapis.com/css2?family=DotGothic16&display=swap');
         body { font-family: 'DotGothic16', sans-serif; background: #0a0a0a; color: white; overflow: hidden; margin: 0; }
         
-        /* Canvasを一番下のレイヤーに */
         canvas { 
             display: block; 
             background: #111; 
@@ -481,17 +565,51 @@
         
         .hidden { display: none !important; }
         
-        /* 画面レイヤーをCanvasより確実に前面に */
         .screen-layer { 
             position: absolute; 
             top: 0; left: 0; right: 0; bottom: 0; 
             z-index: 50; 
             display: flex; flex-direction: column; align-items: center; justify-content: center;
-            background: rgba(0,0,0,0.85);
-            pointer-events: auto; /* ここでクリックを許可 */
+            background: rgba(0,0,0,0.92);
+            pointer-events: auto;
         }
         
-        /* UI要素（ボタン等）の設定 */
+        .card-container { background: #1a1a1a; border: 1px solid #444; }
+        
+        .card-container.ADMIN {
+            background: linear-gradient(45deg, #ff0000, #ff7300, #fffb00, #48ff00, #00ffd5, #002bff, #7a00ff, #ff00c8, #ff0000);
+            background-size: 400%;
+            animation: rainbow 10s linear infinite;
+            border: 2px solid #fff;
+            box-shadow: 0 0 15px #fff, inset 0 0 10px rgba(255,255,255,0.5);
+        }
+        .card-container.ADMIN .rank-text { color: white; text-shadow: 0 0 8px #000; font-size: 18px; }
+
+        .card-container.SS {
+            background: #2d0a1a;
+            border: 2px solid #f472b6;
+            box-shadow: 0 0 10px #f472b6;
+        }
+        .card-container.SS .rank-text { color: #f472b6; text-shadow: 0 0 4px #f472b6; }
+
+        .card-container.S {
+            background: #1a1608;
+            border: 2px solid #facc15;
+            box-shadow: 0 0 8px #facc15;
+        }
+        .card-container.S .rank-text { color: #facc15; text-shadow: 0 0 4px #facc15; }
+
+        .card-container.A { border-color: #f87171; }
+        .card-container.A .rank-text { color: #f87171; }
+        .card-container.B { border-color: #60a5fa; }
+        .card-container.B .rank-text { color: #60a5fa; }
+
+        @keyframes rainbow {
+            0% { background-position: 0% 50%; }
+            50% { background-position: 100% 50%; }
+            100% { background-position: 0% 50%; }
+        }
+
         button, input, label, [onclick] { 
             pointer-events: auto !important; 
             z-index: 60 !important; 
@@ -499,33 +617,28 @@
             position: relative;
         }
 
-        /* ランク別カラー */
-        .rank-SS { color: #f472b6; text-shadow: 0 0 5px #f472b6; }
-        .rank-S { color: #facc15; } .rank-A { color: #f87171; } .rank-B { color: #60a5fa; }
-        
         #battle-log { scrollbar-width: none; pointer-events: none; }
     </style>
 </head>
 <body class="flex flex-col items-center justify-center min-h-screen">
     <div id="ui-container" class="relative w-full max-w-[360px] h-[550px] flex flex-col items-center overflow-hidden">
         
-        <!-- TOP UI (Always visible) -->
+        <!-- TOP UI -->
         <div class="p-2 flex justify-between items-center text-[10px] bg-black/70 absolute top-0 w-full z-[100]">
-            <div id="top-score">0 WINS | 🪙 100</div>
+            <div id="top-score">0 WINS | 🪙 500</div>
             <div id="player-title" onclick="window.openTitles()" class="text-yellow-400 underline">🐣駆け出し冒険者</div>
         </div>
 
-        <!-- 描画領域 -->
         <div class="relative w-full h-[500px] mt-8 flex justify-center items-center">
             <canvas id="gameCanvas" width="360" height="500"></canvas>
             
             <!-- START -->
             <div id="screen-start" class="screen-layer p-6">
-                <h1 class="text-2xl font-bold mb-6 text-green-400">QUEST & BATTLE</h1>
+                <h1 class="text-3xl font-bold mb-6 text-green-400 uppercase tracking-tighter italic">QUEST & BATTLE</h1>
                 <input id="username-input" type="text" placeholder="名前を入力" class="w-full p-2 text-black rounded mb-4 text-center">
-                <button onclick="window.openDifficultySelect()" class="w-full p-4 bg-green-600 rounded mb-2 font-bold shadow-lg hover:brightness-110 active:scale-95 transition-all">クエスト開始</button>
-                <button onclick="window.goToBattleMode()" class="w-full p-4 bg-blue-600 rounded mb-2 font-bold shadow-lg hover:brightness-110 active:scale-95 transition-all">編成・バトル</button>
-                <button onclick="window.showScreen('gachaMain')" class="w-full p-2 bg-pink-600 rounded text-sm mb-2 font-bold shadow-lg">召喚(ガチャ)</button>
+                <button onclick="window.openDifficultySelect()" class="w-full p-4 bg-green-600 rounded mb-2 font-bold shadow-lg text-lg">クエスト開始</button>
+                <button onclick="window.goToBattleMode()" class="w-full p-4 bg-blue-600 rounded mb-2 font-bold shadow-lg text-lg">編成・バトル</button>
+                <button onclick="window.showScreen('gacha-main')" class="w-full p-2 bg-pink-600 rounded text-sm mb-2 font-bold shadow-lg">召喚(ガチャ)</button>
                 <button onclick="window.openShop()" class="w-full p-2 bg-yellow-600 rounded text-sm shadow-lg">ショップ</button>
             </div>
 
@@ -533,21 +646,22 @@
             <div id="screen-difficulty" class="screen-layer hidden p-6">
                 <h2 class="mb-4 text-green-400 font-bold">難易度を選択</h2>
                 <div class="flex flex-col gap-2 w-full">
-                    <button onclick="window.startQuest(0)" class="p-4 bg-blue-900 border border-blue-400 rounded hover:bg-blue-800 transition-colors">EASY</button>
-                    <button onclick="window.startQuest(1)" class="p-4 bg-yellow-900 border border-yellow-400 rounded hover:bg-yellow-800 transition-colors">NORMAL</button>
-                    <button onclick="window.startQuest(2)" class="p-4 bg-red-900 border border-red-400 rounded hover:bg-red-800 transition-colors">HARD</button>
+                    <button onclick="window.startQuest(0)" class="p-4 bg-blue-900 border border-blue-400 rounded">EASY</button>
+                    <button onclick="window.startQuest(1)" class="p-4 bg-yellow-900 border border-yellow-400 rounded">NORMAL</button>
+                    <button onclick="window.startQuest(2)" class="p-4 bg-red-900 border border-red-400 rounded">HARD</button>
                     <button onclick="window.resetGame()" class="mt-4 text-gray-400 underline">戻る</button>
                 </div>
             </div>
 
             <!-- GACHA MAIN -->
-            <div id="screen-gacha-main" class="screen-layer hidden p-6 text-center">
-                <h2 class="text-xl text-pink-400 mb-4 font-bold">英雄召喚</h2>
-                <div id="gacha-animation-box" class="h-24 flex items-center justify-center mb-4"></div>
-                <div id="gacha-main-results" class="flex flex-wrap justify-center gap-2 mb-4 max-h-40 overflow-y-auto"></div>
-                <div class="flex gap-2 w-full">
-                    <button onclick="window.pullGacha(1)" class="flex-1 py-3 bg-pink-600 rounded font-bold text-xs">1回<br>(100)</button>
-                    <button onclick="window.pullGacha(10)" class="flex-1 py-3 bg-pink-800 rounded font-bold text-xs">10回<br>(1000)</button>
+            <div id="screen-gacha-main" class="screen-layer hidden p-4 text-center overflow-hidden">
+                <h2 class="text-2xl text-pink-400 mb-2 font-black italic underline">英雄召喚</h2>
+                <div id="gacha-msg" class="h-4 text-red-500 text-[10px] mb-2"></div>
+                <div id="gacha-animation-box" class="h-28 w-28 flex items-center justify-center mb-4 mx-auto overflow-visible"></div>
+                <div id="gacha-main-results" class="flex flex-wrap justify-center gap-2 mb-4 max-h-[220px] overflow-y-auto w-full p-2"></div>
+                <div class="flex gap-2 w-full px-4">
+                    <button onclick="window.pullGacha(1)" class="flex-1 py-3 bg-pink-600 rounded font-bold text-xs shadow-inner">1回<br>(100)</button>
+                    <button onclick="window.pullGacha(10)" class="flex-1 py-3 bg-pink-800 rounded font-bold text-xs shadow-inner">10回<br>(1000)</button>
                 </div>
                 <button onclick="window.resetGame()" class="mt-4 text-gray-400 underline">閉じる</button>
             </div>
@@ -555,21 +669,18 @@
             <!-- FORMATION -->
             <div id="screen-formation" class="screen-layer hidden p-4">
                 <h2 class="mb-2 text-blue-300 font-bold text-sm">チーム編成 (最大3人)</h2>
-                
-                <div class="flex gap-1 mb-2 w-full">
-                    <button onclick="window.setFilter('ALL')" data-filter="ALL" class="filter-btn flex-1 py-1 text-[10px] bg-blue-600 border border-white rounded">すべて</button>
-                    <button onclick="window.setFilter('SS')" data-filter="SS" class="filter-btn flex-1 py-1 text-[10px] bg-gray-700 border border-gray-500 rounded rank-SS">SS</button>
-                    <button onclick="window.setFilter('S')" data-filter="S" class="filter-btn flex-1 py-1 text-[10px] bg-gray-700 border border-gray-500 rounded rank-S">S</button>
-                    <button onclick="window.setFilter('A')" data-filter="A" class="filter-btn flex-1 py-1 text-[10px] bg-gray-700 border border-gray-500 rounded rank-A">A</button>
-                    <button onclick="window.setFilter('B')" data-filter="B" class="filter-btn flex-1 py-1 text-[10px] bg-gray-700 border border-gray-500 rounded rank-B">B</button>
+                <div class="flex gap-1 mb-2 w-full overflow-x-auto pb-1">
+                    <button onclick="window.setFilter('ALL')" data-filter="ALL" class="filter-btn px-2 py-1 text-[8px] bg-blue-600 border border-white rounded">すべて</button>
+                    <button onclick="window.setFilter('ADMIN')" data-filter="ADMIN" class="filter-btn px-2 py-1 text-[8px] bg-gray-700 border border-gray-500 rounded">GOD</button>
+                    <button onclick="window.setFilter('SS')" data-filter="SS" class="filter-btn px-2 py-1 text-[8px] bg-gray-700 border border-gray-500 rounded">SS</button>
+                    <button onclick="window.setFilter('S')" data-filter="S" class="filter-btn px-2 py-1 text-[8px] bg-gray-700 border border-gray-500 rounded">S</button>
+                    <button onclick="window.setFilter('A')" data-filter="A" class="filter-btn px-2 py-1 text-[8px] bg-gray-700 border border-gray-500 rounded">A</button>
                 </div>
-
-                <div id="collection-list" class="grid grid-cols-3 gap-2 w-full h-56 overflow-y-auto mb-3 bg-gray-900 p-2 border border-gray-600 rounded"></div>
-                
+                <div id="collection-list" class="grid grid-cols-3 gap-2 w-full h-64 overflow-y-auto mb-3 bg-gray-950 p-2 border border-gray-700 rounded"></div>
                 <div class="flex gap-2 w-full">
                     <div class="flex-1 flex justify-around items-center bg-gray-800 rounded p-1 text-[10px]">
-                        <label class="flex items-center gap-1 cursor-pointer"><input type="radio" name="battleMode" value="auto" checked> AUTO</label>
-                        <label class="flex items-center gap-1 cursor-pointer"><input type="radio" name="battleMode" value="manual"> MANUAL</label>
+                        <label class="flex items-center gap-1"><input type="radio" name="battleMode" value="auto" checked> AUTO</label>
+                        <label class="flex items-center gap-1"><input type="radio" name="battleMode" value="manual"> MANUAL</label>
                     </div>
                 </div>
                 <div class="flex gap-2 w-full mt-2">
@@ -581,19 +692,19 @@
             <!-- BATTLE -->
             <div id="screen-battle" class="screen-layer hidden py-4 flex flex-col items-center">
                 <div id="battle-header" class="text-yellow-400 text-sm mb-4 font-bold"></div>
-                <div class="w-full flex flex-col items-center gap-4 flex-grow justify-center">
-                    <div id="enemy-team-ui" class="flex gap-2"></div>
+                <div class="w-full flex flex-col items-center gap-4 flex-grow justify-center px-2">
+                    <div id="enemy-team-ui" class="flex gap-2 justify-center"></div>
                     <div class="text-[10px] text-gray-500 font-bold py-1 px-4 bg-white/10 rounded-full">VS</div>
-                    <div id="player-team-ui" class="flex gap-2"></div>
+                    <div id="player-team-ui" class="flex gap-2 justify-center"></div>
                 </div>
                 <div id="battle-log" class="w-[300px] h-20 bg-black/60 border border-gray-700 rounded p-2 overflow-y-auto mb-4 flex flex-col-reverse text-[9px]"></div>
                 <button id="battle-finish-btn" onclick="window.resetGame()" class="hidden px-8 py-2 bg-yellow-500 text-black font-bold rounded mb-4 shadow-xl">終了</button>
             </div>
 
             <!-- GACHA RESULT (AFTER QUEST) -->
-            <div id="screen-gacha" class="screen-layer hidden p-4">
-                <h2 class="text-xl text-green-400 mb-2 font-bold">リザルト</h2>
-                <div id="quest-coins" class="text-yellow-400 mb-4 text-sm"></div>
+            <div id="screen-gacha-result-screen" class="screen-layer hidden p-4">
+                <h2 class="text-xl text-green-400 mb-2 font-bold italic">QUEST COMPLETE</h2>
+                <div id="quest-coins" class="text-yellow-400 mb-4 text-sm font-bold"></div>
                 <div id="gacha-result" class="flex flex-wrap justify-center gap-2 mb-6"></div>
                 <button onclick="window.goToBattleMode()" class="w-full py-3 bg-blue-600 rounded font-bold shadow-lg">編成へ</button>
             </div>
