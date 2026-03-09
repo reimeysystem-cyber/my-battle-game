@@ -2,7 +2,7 @@
 <html lang="ja">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
     <title>Character Get & Battle - Multi Mode</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <script type="module">
@@ -11,9 +11,8 @@
         import { getFirestore, doc, setDoc, onSnapshot, updateDoc, deleteDoc, getDoc, collection, addDoc, query, orderBy, serverTimestamp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
 
         // --- Firebase Setup ---
-        // 環境変数 __firebase_config がある場合はそれを使用し、無い場合はデフォルト値（空の場合は初期化をスキップ）を使用
         const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : {
-            apiKey: "", // ここが空だとエラーになるため、環境側での注入を前提とする
+            apiKey: "",
             authDomain: "",
             projectId: "default-project",
             storageBucket: "",
@@ -21,7 +20,6 @@
             appId: ""
         };
         
-        // API Keyがない状態での初期化エラーを避けるガード
         let app, auth, db;
         if (firebaseConfig.apiKey) {
             app = initializeApp(firebaseConfig);
@@ -37,6 +35,7 @@
         let winCount = 0;
         let gameState = 'start';
         let playerX = 160;
+        let targetX = 160; // タッチ移動用の目標座標
         let difficultyLevel = 1; 
         let collectedCards = [];
         let items = []; 
@@ -85,7 +84,6 @@
         if (auth) {
             onAuthStateChanged(auth, (u) => { 
                 user = u; 
-                console.log("User state updated:", u ? u.uid : "no user");
             });
             initAuth();
         }
@@ -122,7 +120,7 @@
             };
         }
 
-        // --- Global Functions (Attached to window) ---
+        // --- Global Functions ---
         window.openDifficultySelect = () => {
             const nameInput = document.getElementById('username-input');
             if (nameInput && nameInput.value.trim()) userName = nameInput.value.trim();
@@ -134,6 +132,7 @@
             showScreen(null); 
             gameState = 'playing';
             playerX = canvas.width / 2 - 20;
+            targetX = playerX;
             collectedCards = [];
             items = [];
             obstacles = [];
@@ -147,6 +146,9 @@
             frameCount++;
             ctx.clearRect(0, 0, canvas.width, canvas.height);
             
+            // スムーズな移動（キーボードとタッチの両方に対応）
+            playerX += (targetX - playerX) * 0.2;
+
             const baseSpeed = 4 + (difficultyLevel * 3);
             const spawnInterval = Math.max(15, 50 - (difficultyLevel * 15));
 
@@ -157,9 +159,11 @@
                 items.push({ x: rand(canvas.width - 30), y: -40, rank: RANKS[rand(RANKS.length)] });
             }
             
+            // プレイヤー描画
             ctx.fillStyle = '#4ade80'; 
             ctx.fillRect(playerX, 420, 40, 40);
 
+            // 障害物
             for (let i = obstacles.length - 1; i >= 0; i--) {
                 let o = obstacles[i]; o.y += baseSpeed;
                 ctx.fillStyle = '#f87171'; 
@@ -170,6 +174,7 @@
                 if (o.y > canvas.height) obstacles.splice(i, 1);
             }
             
+            // アイテム
             for (let i = items.length - 1; i >= 0; i--) {
                 let item = items[i]; item.y += baseSpeed * 0.7;
                 ctx.fillStyle = item.rank === 'S' ? '#facc15' : (item.rank === 'A' ? '#f87171' : '#60a5fa');
@@ -233,10 +238,7 @@
         }
 
         window.startBattleAction = async () => {
-            if (!user && auth) {
-                await initAuth();
-            }
-            
+            if (!user && auth) await initAuth();
             currentTurnCount = 1;
             const modeInput = document.querySelector('input[name="battleMode"]:checked');
             battleMode = modeInput ? modeInput.value : 'auto';
@@ -244,7 +246,7 @@
 
             if (battleMode === 'multi') {
                 if (!roomId) { alert("ルームキーを入力してください"); return; }
-                if (!db) { alert("Firebaseが有効ではありません。SOLO/AUTOをお試しください。"); return; }
+                if (!db) { alert("Firebaseが無効です。SOLOをお試しください。"); return; }
                 showScreen('matching');
                 joinMultiplayerRoom();
             } else {
@@ -286,7 +288,7 @@
         function startMultiTurn() {
             if (checkWinCondition()) return;
             isMyTurn = true;
-            log(`ターン ${currentTurnCount}: 行動を選択してください`);
+            log(`ターン ${currentTurnCount}: 行動を選択！`);
             updateBattleUI();
         }
 
@@ -296,7 +298,7 @@
             const action = { turn: currentTurnCount, role: playerRole, actorIdx, targetIdx, isEnemyTarget, timestamp: serverTimestamp() };
             const actionRef = doc(db, 'artifacts', appId, 'public', 'data', 'rooms', roomId, 'actions', `${currentTurnCount}_${playerRole}`);
             await setDoc(actionRef, action);
-            log("相手の行動を待っています...");
+            log("待機中...");
             updateBattleUI();
         }
 
@@ -316,7 +318,7 @@
                 applyAction(s1.data(), "p1");
                 applyAction(s2.data(), "p2");
                 currentTurnCount++;
-                if (playerRole === "p1") { await updateDoc(doc(db, 'artifacts', appId, 'public', 'data', 'rooms', roomId), { turn: currentTurnCount }); }
+                if (playerRole === "p1") await updateDoc(doc(db, 'artifacts', appId, 'public', 'data', 'rooms', roomId), { turn: currentTurnCount });
                 setTimeout(startMultiTurn, 1000);
             }
         }
@@ -327,12 +329,13 @@
             const targetList = act.isEnemyTarget ? (isMeActor ? enemies : selectedTeam) : (isMeActor ? selectedTeam : enemies);
             const actor = actorList[act.actorIdx];
             const target = targetList[act.targetIdx];
+            if (!actor || !target) return;
             if (actor.type === 'healer') { 
                 target.currentHp = Math.min(target.maxHp, target.currentHp + actor.atk); 
                 log(`${actor.owner}の${actor.name}が回復！ (+${actor.atk})`); 
             } else { 
                 target.currentHp = Math.max(0, target.currentHp - actor.atk); 
-                log(`${actor.owner}の${actor.name}が${target.name}を攻撃！ (-${actor.atk})`); 
+                log(`${actor.owner}の${actor.name}が攻撃！ (-${actor.atk})`); 
             }
             updateBattleUI();
         }
@@ -374,7 +377,7 @@
         function startSoloTurn() { 
             if (checkWinCondition()) return; 
             isMyTurn = true; 
-            log(`ターン ${currentTurnCount}: 攻撃対象をタップ！`);
+            log(`ターン ${currentTurnCount}: 攻撃対象を選択！`);
             updateBattleUI(); 
         }
 
@@ -406,7 +409,8 @@
                 div.className = `w-20 p-1 bg-gray-800 border-2 ${isDead ? 'opacity-30 border-gray-900' : 'border-gray-500'} text-[10px] text-center rounded transition-all`;
                 if (!isDead && isMyTurn) {
                     div.classList.add('target-glow', 'cursor-pointer', 'scale-105');
-                    div.onclick = () => {
+                    div.onclick = (e) => {
+                        e.stopPropagation();
                         const actorIdx = selectedTeam.findIndex(a => a.currentHp > 0); 
                         if (battleMode === 'multi') sendAction(actorIdx, idx, isEnemy);
                         else handleSoloAction(actorIdx, idx, isEnemy);
@@ -469,11 +473,11 @@
             if (isWin) { 
                 winCount++; 
                 if (scoreDisp) scoreDisp.innerText = `WINS: ${winCount}`; 
-                log("★ 勝利！ おめでとう！ ★"); 
+                log("★ 勝利！ ★"); 
             } else { 
                 winCount = 0; 
                 if (scoreDisp) scoreDisp.innerText = `WINS: 0`; 
-                log("× 敗北... 修行し直そう ×"); 
+                log("× 敗北... ×"); 
             }
             if (unsubscribeRoom) unsubscribeRoom();
         }
@@ -484,28 +488,50 @@
             selectedTeam = [];
         };
 
+        // --- Touch & Mouse Events for Mobile ---
+        function handleMove(e) {
+            if (gameState !== 'playing') return;
+            const rect = canvas.getBoundingClientRect();
+            const touchX = (e.touches ? e.touches[0].clientX : e.clientX) - rect.left;
+            // キャンバス内の座標に変換
+            const ratio = canvas.width / rect.width;
+            targetX = Math.max(0, Math.min(canvas.width - 40, touchX * ratio - 20));
+            e.preventDefault();
+        }
+
+        canvas.addEventListener('touchstart', (e) => {
+            if (gameState === 'playing') handleMove(e);
+        }, { passive: false });
+        
+        canvas.addEventListener('touchmove', (e) => {
+            if (gameState === 'playing') handleMove(e);
+        }, { passive: false });
+
+        // キーボード操作の維持
         window.addEventListener('keydown', e => {
             if (gameState !== 'playing') return;
-            if (e.key === 'ArrowLeft') playerX = Math.max(0, playerX - 30);
-            if (e.key === 'ArrowRight') playerX = Math.min(canvas.width - 40, playerX + 30);
+            if (e.key === 'ArrowLeft') targetX = Math.max(0, targetX - 40);
+            if (e.key === 'ArrowRight') targetX = Math.min(canvas.width - 40, targetX + 40);
         });
 
         window.onload = () => showScreen('start');
     </script>
     <style>
         @import url('https://fonts.googleapis.com/css2?family=DotGothic16&display=swap');
-        body { font-family: 'DotGothic16', sans-serif; background: #0a0a0a; color: white; overflow: hidden; }
-        canvas { display: block; margin: 0 auto; background: #111; border: 4px solid #333; }
+        body { font-family: 'DotGothic16', sans-serif; background: #0a0a0a; color: white; overflow: hidden; touch-action: manipulation; }
+        canvas { display: block; margin: 0 auto; background: #111; border: 4px solid #333; max-width: 100%; height: auto; touch-action: none; }
         .rank-S { color: #facc15; text-shadow: 0 0 5px #facc15; }
         .rank-A { color: #f87171; text-shadow: 0 0 5px #f87171; }
         .rank-B { color: #60a5fa; text-shadow: 0 0 5px #60a5fa; }
         .target-glow { animation: glow 1s infinite alternate; }
         @keyframes glow { from { border-color: #555; } to { border-color: #fff; box-shadow: 0 0 8px #fff; } }
         .hidden { display: none !important; }
+        /* モバイルでのボタン押しやすさ */
+        button { user-select: none; -webkit-tap-highlight-color: transparent; }
     </style>
 </head>
-<body class="flex flex-col items-center justify-center min-h-screen">
-    <div id="ui-container" class="w-full max-w-md p-2">
+<body class="flex flex-col items-center justify-center min-h-screen p-2">
+    <div id="ui-container" class="w-full max-w-md">
         <div class="flex justify-between items-center mb-2 px-2">
             <h1 class="text-lg text-yellow-400 italic font-bold">QUEST & BATTLE</h1>
             <div id="top-score" class="text-xs bg-gray-800 px-2 py-1 rounded">WINS: 0</div>
@@ -520,11 +546,12 @@
                     <button onclick="window.openDifficultySelect()" class="p-4 bg-green-700 hover:bg-green-600 rounded-lg border-2 border-green-400 font-bold shadow-lg">QUEST</button>
                     <button onclick="window.goToBattleMode()" class="p-4 bg-red-700 hover:bg-red-600 rounded-lg border-2 border-red-400 font-bold shadow-lg">BATTLE</button>
                 </div>
+                <p class="text-[10px] text-gray-400 text-center">QUEST中は左右スワイプで移動できます</p>
             </div>
 
             <!-- DIFFICULTY SELECT -->
             <div id="screen-difficulty" class="absolute inset-0 hidden flex flex-col items-center justify-center bg-black/90 p-6">
-                <h2 class="text-lg mb-6 text-green-400">SELECT DIFFICULTY</h2>
+                <h2 class="text-lg mb-6 text-green-400 text-center">SELECT DIFFICULTY</h2>
                 <div class="flex flex-col gap-4 w-full">
                     <button onclick="window.startQuest(0)" class="p-3 bg-blue-900 border border-blue-400 rounded">EASY</button>
                     <button onclick="window.startQuest(1)" class="p-3 bg-yellow-900 border border-yellow-400 rounded">NORMAL</button>
@@ -573,10 +600,10 @@
                     <div class="relative flex items-center justify-center"><div class="absolute w-full h-[1px] bg-white/10"></div><div class="z-10 bg-black px-4 text-white/40 text-[10px]">VERSUS</div></div>
                     <div id="player-team-ui" class="flex justify-center gap-2"></div>
                 </div>
-                <div class="w-full px-2 mt-4">
-                    <div id="battle-log" class="text-[10px] h-32 overflow-y-auto w-full px-3 text-gray-200 bg-black/60 py-2 border border-white/10 rounded"></div>
+                <div class="w-full px-2 mt-2">
+                    <div id="battle-log" class="text-[10px] h-28 overflow-y-auto w-full px-3 text-gray-200 bg-black/60 py-2 border border-white/10 rounded"></div>
                 </div>
-                <button id="battle-finish-btn" onclick="window.resetGame()" class="hidden mx-auto mt-4 px-10 py-2 bg-yellow-500 text-black font-bold rounded">DONE</button>
+                <button id="battle-finish-btn" onclick="window.resetGame()" class="hidden mx-auto mt-2 px-10 py-2 bg-yellow-500 text-black font-bold rounded">DONE</button>
             </div>
         </div>
     </div>
