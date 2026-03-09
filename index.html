@@ -11,31 +11,24 @@
         import { getFirestore, doc, setDoc, onSnapshot, updateDoc, deleteDoc, getDoc, collection, addDoc, query, orderBy, serverTimestamp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
 
         // --- Firebase Setup ---
-        const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : {
-            apiKey: "",
-            authDomain: "",
-            projectId: "default-project",
-            storageBucket: "",
-            messagingSenderId: "",
-            appId: ""
-        };
+        const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : null;
+        const appId = typeof __app_id !== 'undefined' ? __app_id : "my-battle-app-v3";
         
         let app, auth, db;
-        if (firebaseConfig.apiKey) {
+        
+        if (firebaseConfig) {
             app = initializeApp(firebaseConfig);
             auth = getAuth(app);
             db = getFirestore(app);
         }
         
-        const appId = typeof __app_id !== 'undefined' ? __app_id : "my-battle-app-v3";
-
         // --- Game State & Variables ---
         let user = null;
         let userName = "Player";
         let winCount = 0;
         let gameState = 'start';
         let playerX = 160;
-        let targetX = 160; // タッチ移動用の目標座標
+        let targetX = 160; 
         let difficultyLevel = 1; 
         let collectedCards = [];
         let items = []; 
@@ -53,6 +46,7 @@
         let roomId = "";
         let playerRole = ""; 
         let unsubscribeRoom = null;
+        let fullRoomData = null;
 
         const canvas = document.getElementById('gameCanvas');
         const ctx = canvas.getContext('2d');
@@ -82,9 +76,7 @@
         };
 
         if (auth) {
-            onAuthStateChanged(auth, (u) => { 
-                user = u; 
-            });
+            onAuthStateChanged(auth, (u) => { user = u; });
             initAuth();
         }
 
@@ -120,7 +112,6 @@
             };
         }
 
-        // --- Global Functions ---
         window.openDifficultySelect = () => {
             const nameInput = document.getElementById('username-input');
             if (nameInput && nameInput.value.trim()) userName = nameInput.value.trim();
@@ -133,10 +124,7 @@
             gameState = 'playing';
             playerX = canvas.width / 2 - 20;
             targetX = playerX;
-            collectedCards = [];
-            items = [];
-            obstacles = [];
-            frameCount = 0;
+            collectedCards = []; items = []; obstacles = []; frameCount = 0;
             if (gameLoop) cancelAnimationFrame(gameLoop);
             gameLoop = requestAnimationFrame(update);
         };
@@ -146,8 +134,9 @@
             frameCount++;
             ctx.clearRect(0, 0, canvas.width, canvas.height);
             
-            // スムーズな移動（キーボードとタッチの両方に対応）
-            playerX += (targetX - playerX) * 0.2;
+            // クイックな移動
+            const easeFactor = 0.5;
+            playerX += (targetX - playerX) * easeFactor;
 
             const baseSpeed = 4 + (difficultyLevel * 3);
             const spawnInterval = Math.max(15, 50 - (difficultyLevel * 15));
@@ -159,11 +148,9 @@
                 items.push({ x: rand(canvas.width - 30), y: -40, rank: RANKS[rand(RANKS.length)] });
             }
             
-            // プレイヤー描画
             ctx.fillStyle = '#4ade80'; 
             ctx.fillRect(playerX, 420, 40, 40);
 
-            // 障害物
             for (let i = obstacles.length - 1; i >= 0; i--) {
                 let o = obstacles[i]; o.y += baseSpeed;
                 ctx.fillStyle = '#f87171'; 
@@ -174,7 +161,6 @@
                 if (o.y > canvas.height) obstacles.splice(i, 1);
             }
             
-            // アイテム
             for (let i = items.length - 1; i >= 0; i--) {
                 let item = items[i]; item.y += baseSpeed * 0.7;
                 ctx.fillStyle = item.rank === 'S' ? '#facc15' : (item.rank === 'A' ? '#f87171' : '#60a5fa');
@@ -224,11 +210,8 @@
                 item.innerHTML = `<span class="rank-${char.rank} font-bold">RANK ${char.rank}</span><br>${char.name}<br>HP:${char.hp} ATK:${char.atk}`;
                 item.onclick = () => {
                     const idx = selectedTeam.findIndex(t => t.id === char.id);
-                    if (idx > -1) {
-                        selectedTeam.splice(idx, 1);
-                    } else if (selectedTeam.length < 3) {
-                        selectedTeam.push({...char});
-                    }
+                    if (idx > -1) { selectedTeam.splice(idx, 1); } 
+                    else if (selectedTeam.length < 3) { selectedTeam.push({...char, currentHp: char.hp}); }
                     renderCollection();
                 };
                 list.appendChild(item);
@@ -258,31 +241,50 @@
         async function joinMultiplayerRoom() {
             if (!db || !user) return;
             const roomRef = doc(db, 'artifacts', appId, 'public', 'data', 'rooms', roomId);
-            const snap = await getDoc(roomRef);
-            if (!snap.exists()) {
-                playerRole = "p1";
-                await setDoc(roomRef, { p1: { name: userName, team: selectedTeam, uid: user.uid }, p2: null, turn: 1, status: "waiting" });
-            } else {
-                const data = snap.data();
-                if (data.p2 && data.p2.uid !== user.uid) { alert("このルームは満員です"); showScreen('formation'); return; }
-                playerRole = "p2";
-                await updateDoc(roomRef, { p2: { name: userName, team: selectedTeam, uid: user.uid }, status: "ready" });
+            try {
+                const snap = await getDoc(roomRef);
+                if (!snap.exists()) {
+                    playerRole = "p1";
+                    await setDoc(roomRef, { p1: { name: userName, team: selectedTeam, uid: user.uid }, p2: null, turn: 1, status: "waiting" });
+                } else {
+                    const data = snap.data();
+                    if (data.p2 && data.p2.uid !== user.uid) { alert("このルームは満員です"); showScreen('formation'); return; }
+                    playerRole = "p2";
+                    await updateDoc(roomRef, { p2: { name: userName, team: selectedTeam, uid: user.uid }, status: "ready" });
+                }
+                unsubscribeRoom = onSnapshot(roomRef, (docSnap) => {
+                    const data = docSnap.data();
+                    if (!data) return;
+                    fullRoomData = data;
+                    if (data.status === "ready" && gameState !== 'battle') {
+                        showScreen('battle');
+                        setupMultiBattle(data);
+                    } else if (gameState === 'battle') {
+                        syncFromDatabase(data);
+                    }
+                });
+            } catch (err) {
+                console.error("Firebase Error:", err);
+                showScreen('formation');
             }
-            unsubscribeRoom = onSnapshot(roomRef, (docSnap) => {
-                const data = docSnap.data();
-                if (!data) return;
-                if (data.status === "ready") { showScreen('battle'); setupMultiBattle(data); }
-                checkOpponentAction(data);
-            });
         }
 
         function setupMultiBattle(data) {
-            currentTurnCount = data.turn;
-            if (playerRole === "p1") { enemies = data.p2.team; selectedTeam = data.p1.team; } 
-            else { enemies = data.p1.team; selectedTeam = data.p2.team; }
-            selectedTeam.forEach(c => c.currentHp = c.currentHp || c.maxHp);
-            enemies.forEach(c => c.currentHp = c.currentHp || c.maxHp);
+            syncFromDatabase(data);
             startMultiTurn();
+        }
+
+        function syncFromDatabase(data) {
+            currentTurnCount = data.turn;
+            if (playerRole === "p1") {
+                selectedTeam = data.p1.team;
+                enemies = data.p2 ? data.p2.team : [];
+            } else {
+                selectedTeam = data.p2.team;
+                enemies = data.p1.team;
+            }
+            updateBattleUI();
+            checkWinCondition();
         }
 
         function startMultiTurn() {
@@ -290,23 +292,26 @@
             isMyTurn = true;
             log(`ターン ${currentTurnCount}: 行動を選択！`);
             updateBattleUI();
+            checkOpponentAction();
         }
 
         async function sendAction(actorIdx, targetIdx, isEnemyTarget) {
-            if (!db) return;
+            if (!db || !user) return;
             isMyTurn = false;
             const action = { turn: currentTurnCount, role: playerRole, actorIdx, targetIdx, isEnemyTarget, timestamp: serverTimestamp() };
             const actionRef = doc(db, 'artifacts', appId, 'public', 'data', 'rooms', roomId, 'actions', `${currentTurnCount}_${playerRole}`);
             await setDoc(actionRef, action);
-            log("待機中...");
+            log("相手の行動を待機中...");
             updateBattleUI();
         }
 
-        function checkOpponentAction(roomData) {
+        function checkOpponentAction() {
             if (gameState !== 'battle' || !db) return;
             const oppRole = playerRole === "p1" ? "p2" : "p1";
             const actionRef = doc(db, 'artifacts', appId, 'public', 'data', 'rooms', roomId, 'actions', `${currentTurnCount}_${oppRole}`);
-            onSnapshot(actionRef, (snap) => { if (snap.exists() && !isMyTurn) checkBothActionsDone(); });
+            onSnapshot(actionRef, (snap) => { 
+                if (snap.exists()) checkBothActionsDone(); 
+            });
         }
 
         async function checkBothActionsDone() {
@@ -314,30 +319,46 @@
             const p1ActRef = doc(db, 'artifacts', appId, 'public', 'data', 'rooms', roomId, 'actions', `${currentTurnCount}_p1`);
             const p2ActRef = doc(db, 'artifacts', appId, 'public', 'data', 'rooms', roomId, 'actions', `${currentTurnCount}_p2`);
             const [s1, s2] = await Promise.all([getDoc(p1ActRef), getDoc(p2ActRef)]);
+            
             if (s1.exists() && s2.exists()) {
-                applyAction(s1.data(), "p1");
-                applyAction(s2.data(), "p2");
-                currentTurnCount++;
-                if (playerRole === "p1") await updateDoc(doc(db, 'artifacts', appId, 'public', 'data', 'rooms', roomId), { turn: currentTurnCount });
+                // 両方の行動をローカルのコピーに適用
+                const p1Team = [...fullRoomData.p1.team];
+                const p2Team = [...fullRoomData.p2.team];
+                
+                const process = (act, role) => {
+                    const actorSide = (role === "p1") ? p1Team : p2Team;
+                    const opponentSide = (role === "p1") ? p2Team : p1Team;
+                    const actor = actorSide[act.actorIdx];
+                    if (!actor || actor.currentHp <= 0) return;
+                    
+                    const targetList = act.isEnemyTarget ? opponentSide : actorSide;
+                    const target = targetList[act.targetIdx];
+                    if (!target) return;
+
+                    if (actor.type === 'healer') {
+                        target.currentHp = Math.min(target.maxHp, target.currentHp + actor.atk);
+                        log(`${actor.owner}の${actor.name}が回復！`);
+                    } else {
+                        target.currentHp = Math.max(0, target.currentHp - actor.atk);
+                        log(`${actor.owner}の${actor.name}が攻撃！`);
+                    }
+                };
+
+                process(s1.data(), "p1");
+                process(s2.data(), "p2");
+
+                // P1が代表してデータベースを更新（HPの同期）
+                if (playerRole === "p1") {
+                    const nextTurn = currentTurnCount + 1;
+                    await updateDoc(doc(db, 'artifacts', appId, 'public', 'data', 'rooms', roomId), {
+                        "p1.team": p1Team,
+                        "p2.team": p2Team,
+                        turn: nextTurn
+                    });
+                }
+                
                 setTimeout(startMultiTurn, 1000);
             }
-        }
-
-        function applyAction(act, role) {
-            const isMeActor = (role === playerRole);
-            const actorList = isMeActor ? selectedTeam : enemies;
-            const targetList = act.isEnemyTarget ? (isMeActor ? enemies : selectedTeam) : (isMeActor ? selectedTeam : enemies);
-            const actor = actorList[act.actorIdx];
-            const target = targetList[act.targetIdx];
-            if (!actor || !target) return;
-            if (actor.type === 'healer') { 
-                target.currentHp = Math.min(target.maxHp, target.currentHp + actor.atk); 
-                log(`${actor.owner}の${actor.name}が回復！ (+${actor.atk})`); 
-            } else { 
-                target.currentHp = Math.max(0, target.currentHp - actor.atk); 
-                log(`${actor.owner}の${actor.name}が攻撃！ (-${actor.atk})`); 
-            }
-            updateBattleUI();
         }
 
         function runSoloBattle() {
@@ -360,13 +381,13 @@
                 if (actor.type === 'healer') {
                     const t = aliveSide[rand(aliveSide.length)];
                     t.currentHp = Math.min(t.maxHp, t.currentHp + actor.atk);
-                    log(`${actor.owner}の${actor.name}が回復！ (+${actor.atk})`);
+                    log(`${actor.owner}の${actor.name}が回復！`);
                 } else {
                     const aliveOpp = opp.filter(c => c.currentHp > 0);
                     if (aliveOpp.length > 0) {
                         const t = aliveOpp[rand(aliveOpp.length)];
                         t.currentHp = Math.max(0, t.currentHp - actor.atk);
-                        log(`${actor.owner}の${actor.name}が${t.name}に攻撃！ (-${actor.atk})`);
+                        log(`${actor.owner}の${actor.name}が攻撃！`);
                     }
                 }
                 currentTurnCount++;
@@ -377,15 +398,15 @@
         function startSoloTurn() { 
             if (checkWinCondition()) return; 
             isMyTurn = true; 
-            log(`ターン ${currentTurnCount}: 攻撃対象を選択！`);
+            log(`ターン ${currentTurnCount}: 行動を選択！`);
             updateBattleUI(); 
         }
 
         function checkWinCondition() {
             const pAlive = selectedTeam.filter(c => c.currentHp > 0);
             const eAlive = enemies.filter(c => c.currentHp > 0);
-            if (eAlive.length === 0) { finishBattle(true); return true; }
-            if (pAlive.length === 0) { finishBattle(false); return true; }
+            if (eAlive.length === 0 && enemies.length > 0) { finishBattle(true); return true; }
+            if (pAlive.length === 0 && selectedTeam.length > 0) { finishBattle(false); return true; }
             if (currentTurnCount >= MAX_TURNS) {
                 const pTotal = pAlive.reduce((s,c)=>s+c.currentHp,0);
                 const eTotal = eAlive.reduce((s,c)=>s+c.currentHp,0);
@@ -429,10 +450,10 @@
             const target = isEnemy ? enemies[tIdx] : selectedTeam[tIdx];
             if (actor.type === 'healer') {
                 target.currentHp = Math.min(target.maxHp, target.currentHp + actor.atk);
-                log(`${actor.owner}の${actor.name}が回復！ (+${actor.atk})`);
+                log(`${actor.owner}の${actor.name}が回復！`);
             } else {
                 target.currentHp = Math.max(0, target.currentHp - actor.atk);
-                log(`${actor.owner}の${actor.name}が${target.name}を攻撃！ (-${actor.atk})`);
+                log(`${actor.owner}の${actor.name}が攻撃！`);
             }
             currentTurnCount++;
             updateBattleUI();
@@ -446,7 +467,7 @@
                         if (alivePlayers.length > 0) {
                             const t = alivePlayers[rand(alivePlayers.length)];
                             t.currentHp = Math.max(0, t.currentHp - eActor.atk);
-                            log(`CPUの${eActor.name}が${t.name}を攻撃！ (-${eActor.atk})`);
+                            log(`CPUの${eActor.name}が攻撃！`);
                         }
                     }
                     updateBattleUI();
@@ -488,26 +509,19 @@
             selectedTeam = [];
         };
 
-        // --- Touch & Mouse Events for Mobile ---
         function handleMove(e) {
             if (gameState !== 'playing') return;
             const rect = canvas.getBoundingClientRect();
-            const touchX = (e.touches ? e.touches[0].clientX : e.clientX) - rect.left;
-            // キャンバス内の座標に変換
+            let clientX = (e.touches && e.touches.length > 0) ? e.touches[0].clientX : e.clientX;
+            const touchX = clientX - rect.left;
             const ratio = canvas.width / rect.width;
             targetX = Math.max(0, Math.min(canvas.width - 40, touchX * ratio - 20));
-            e.preventDefault();
+            if (e.cancelable) e.preventDefault();
         }
 
-        canvas.addEventListener('touchstart', (e) => {
-            if (gameState === 'playing') handleMove(e);
-        }, { passive: false });
-        
-        canvas.addEventListener('touchmove', (e) => {
-            if (gameState === 'playing') handleMove(e);
-        }, { passive: false });
+        canvas.addEventListener('touchstart', handleMove, { passive: false });
+        canvas.addEventListener('touchmove', handleMove, { passive: false });
 
-        // キーボード操作の維持
         window.addEventListener('keydown', e => {
             if (gameState !== 'playing') return;
             if (e.key === 'ArrowLeft') targetX = Math.max(0, targetX - 40);
@@ -526,7 +540,6 @@
         .target-glow { animation: glow 1s infinite alternate; }
         @keyframes glow { from { border-color: #555; } to { border-color: #fff; box-shadow: 0 0 8px #fff; } }
         .hidden { display: none !important; }
-        /* モバイルでのボタン押しやすさ */
         button { user-select: none; -webkit-tap-highlight-color: transparent; }
     </style>
 </head>
@@ -539,17 +552,14 @@
         <div id="game-container" class="relative">
             <canvas id="gameCanvas" width="360" height="500"></canvas>
             
-            <!-- START SCREEN -->
             <div id="screen-start" class="absolute inset-0 flex flex-col items-center justify-center bg-black/80 p-6">
                 <input id="username-input" type="text" maxlength="10" placeholder="Player Name" class="w-full p-2 text-black rounded text-sm text-center mb-6">
                 <div class="grid grid-cols-2 gap-4 w-full mb-8">
                     <button onclick="window.openDifficultySelect()" class="p-4 bg-green-700 hover:bg-green-600 rounded-lg border-2 border-green-400 font-bold shadow-lg">QUEST</button>
                     <button onclick="window.goToBattleMode()" class="p-4 bg-red-700 hover:bg-red-600 rounded-lg border-2 border-red-400 font-bold shadow-lg">BATTLE</button>
                 </div>
-                <p class="text-[10px] text-gray-400 text-center">QUEST中は左右スワイプで移動できます</p>
             </div>
 
-            <!-- DIFFICULTY SELECT -->
             <div id="screen-difficulty" class="absolute inset-0 hidden flex flex-col items-center justify-center bg-black/90 p-6">
                 <h2 class="text-lg mb-6 text-green-400 text-center">SELECT DIFFICULTY</h2>
                 <div class="flex flex-col gap-4 w-full">
@@ -560,14 +570,12 @@
                 </div>
             </div>
 
-            <!-- GACHA SCREEN -->
             <div id="screen-gacha" class="absolute inset-0 hidden flex flex-col items-center justify-center bg-black/90 p-4">
                 <h2 class="text-xl mb-4 text-green-400">CARDS GET!</h2>
                 <div id="gacha-result" class="flex flex-wrap justify-center gap-2 mb-6"></div>
                 <button onclick="window.goToBattleMode()" class="w-full py-3 bg-blue-600 rounded font-bold">TEAM SETTINGS</button>
             </div>
 
-            <!-- FORMATION SCREEN -->
             <div id="screen-formation" class="absolute inset-0 hidden flex flex-col items-center justify-center bg-black/95 p-4">
                 <h2 class="text-lg mb-2 text-blue-300">TEAM (MAX 3)</h2>
                 <div id="collection-list" class="grid grid-cols-3 gap-2 w-full max-h-48 overflow-y-auto mb-4 bg-gray-900 p-2 border border-gray-600 rounded"></div>
@@ -587,12 +595,10 @@
                 </div>
             </div>
 
-            <!-- MATCHING SCREEN -->
             <div id="screen-matching" class="absolute inset-0 hidden flex flex-col items-center justify-center bg-black/90">
                 <div class="animate-pulse text-yellow-400 font-bold">MATCHING...</div>
             </div>
 
-            <!-- BATTLE SCREEN -->
             <div id="screen-battle" class="absolute inset-0 hidden flex flex-col items-center justify-between bg-black/80 py-4">
                 <div id="battle-header" class="text-center text-yellow-400 text-sm font-bold bg-black/50 w-full py-1"></div>
                 <div class="flex flex-col gap-4 w-full px-2">
