@@ -65,11 +65,13 @@
 
         // --- Auth Initialization ---
         const initAuth = async () => {
-            if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
-                await signInWithCustomToken(auth, __initial_auth_token);
-            } else {
-                await signInAnonymously(auth);
-            }
+            try {
+                if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
+                    await signInWithCustomToken(auth, __initial_auth_token);
+                } else {
+                    await signInAnonymously(auth);
+                }
+            } catch (e) { console.error("Auth Init Error:", e); }
         };
         initAuth();
 
@@ -136,9 +138,15 @@
         function rand(n) { return Math.floor(Math.random() * n); }
         
         function showScreen(screenName) {
-            Object.values(screens).forEach(s => s && s.classList.add('hidden'));
+            Object.values(screens).forEach(s => {
+                if (s) {
+                    s.classList.add('hidden');
+                    s.style.display = 'none';
+                }
+            });
             if (screenName && screens[screenName]) {
                 screens[screenName].classList.remove('hidden');
+                screens[screenName].style.display = 'flex';
                 gameState = screenName;
             }
             if (screenName === 'formation') renderCollection();
@@ -149,7 +157,9 @@
             }
             if (screenName === 'shop') renderShop();
             if (screenName === 'titles') renderTitles();
-            if (screenName === null) gameState = 'playing';
+            if (screenName === null) {
+                gameState = 'playing';
+            }
             
             updateMainUI();
         }
@@ -516,7 +526,8 @@
 
                 if (!isDead && isMyTurn) {
                     div.classList.add('cursor-pointer');
-                    div.onclick = () => {
+                    div.onclick = (e) => {
+                        e.stopPropagation();
                         if (!isEnemy && selectedActorIdx === -1) {
                             selectedActorIdx = idx;
                             updateBattleUI();
@@ -583,6 +594,7 @@
         async function finishBattle(isWin) {
             isMyTurn = false; 
             document.getElementById('battle-finish-btn').classList.remove('hidden');
+            document.getElementById('battle-finish-btn').style.display = 'block';
             if (isWin) { 
                 winCount++; 
                 totalCoins += 50; 
@@ -602,6 +614,7 @@
 
         function handleMove(e) {
             if (gameState !== 'playing') return;
+            // ボタン操作と重複しないように調整
             e.preventDefault();
             const rect = canvas.getBoundingClientRect();
             let clientX = e.touches ? e.touches[0].clientX : e.clientX;
@@ -614,7 +627,10 @@
         canvas.addEventListener('mousedown', handleMove);
         canvas.addEventListener('mousemove', (e) => { if (e.buttons === 1) handleMove(e); });
 
-        window.onload = () => showScreen('start');
+        window.onload = () => {
+            showScreen('start');
+            updateMainUI();
+        };
     </script>
     <style>
         @import url('https://fonts.googleapis.com/css2?family=DotGothic16&display=swap');
@@ -626,11 +642,22 @@
         .actor-glow { border-color: #facc15 !important; box-shadow: 0 0 15px #facc15; }
         @keyframes glow { from { border-color: #555; } to { border-color: #fff; box-shadow: 0 0 8px #fff; } }
         .hidden { display: none !important; }
-        button:active { transform: scale(0.95); }
+        /* ボタン等の重なりを確実にする */
+        .screen-layer {
+            position: absolute;
+            top: 0; left: 0; right: 0; bottom: 0;
+            z-index: 50;
+            pointer-events: auto;
+        }
+        button {
+            touch-action: manipulation;
+            position: relative;
+            z-index: 60;
+        }
     </style>
 </head>
 <body class="flex flex-col items-center justify-center min-h-screen p-2">
-    <div id="ui-container" class="w-full max-md">
+    <div id="ui-container" class="w-full max-w-[360px]">
         <div class="flex flex-col mb-2 px-2">
             <div class="flex justify-between items-center">
                 <h1 class="text-lg text-yellow-400 font-bold">QUEST & BATTLE</h1>
@@ -642,7 +669,7 @@
         <div id="game-container" class="relative">
             <canvas id="gameCanvas" width="360" height="500"></canvas>
             
-            <div id="screen-start" class="absolute inset-0 flex flex-col items-center justify-center bg-black/80 p-6 z-10 text-center">
+            <div id="screen-start" class="screen-layer flex flex-col items-center justify-center bg-black/80 p-6 text-center">
                 <input id="username-input" type="text" maxlength="10" placeholder="冒険者の名前" class="w-full p-2 text-black rounded text-sm text-center mb-6">
                 <div class="grid grid-cols-1 gap-3 w-full mb-8">
                     <button onclick="window.openDifficultySelect()" class="p-4 bg-green-700 rounded-lg border-2 border-green-400 font-bold">クエストへ</button>
@@ -651,13 +678,13 @@
                 </div>
             </div>
 
-            <div id="screen-titles" class="absolute inset-0 hidden flex flex-col items-center justify-center bg-black/95 p-6 z-20">
+            <div id="screen-titles" class="screen-layer hidden flex-col items-center justify-center bg-black/95 p-6">
                 <h2 class="text-lg mb-4 text-yellow-400 font-bold">称号コレクション</h2>
                 <div id="title-list" class="w-full flex flex-col bg-gray-900/50 rounded p-2 overflow-y-auto max-h-80 border border-gray-700"></div>
                 <button onclick="window.resetGame()" class="mt-6 px-8 py-2 bg-gray-700 rounded text-sm">戻る</button>
             </div>
 
-            <div id="screen-difficulty" class="absolute inset-0 hidden flex flex-col items-center justify-center bg-black/90 p-6 z-10">
+            <div id="screen-difficulty" class="screen-layer hidden flex-col items-center justify-center bg-black/90 p-6">
                 <h2 class="text-lg mb-6 text-green-400 text-center">難易度を選択</h2>
                 <div class="flex flex-col gap-4 w-full">
                     <button onclick="window.startQuest(0)" class="p-3 bg-blue-900 border border-blue-400 rounded">EASY</button>
@@ -667,20 +694,20 @@
                 </div>
             </div>
 
-            <div id="screen-gacha" class="absolute inset-0 hidden flex flex-col items-center justify-center bg-black/90 p-4 z-10">
+            <div id="screen-gacha" class="screen-layer hidden flex-col items-center justify-center bg-black/90 p-4">
                 <h2 class="text-xl mb-4 text-green-400">クエスト完了！</h2>
                 <div id="quest-coins" class="text-yellow-400 mb-4 text-sm font-bold">獲得コイン: +0</div>
                 <div id="gacha-result" class="flex flex-wrap justify-center gap-2 mb-6"></div>
                 <button onclick="window.goToBattleMode()" class="w-full py-3 bg-blue-600 rounded font-bold">編成へ</button>
             </div>
 
-            <div id="screen-shop" class="absolute inset-0 hidden flex flex-col items-center justify-center bg-black/95 p-4 z-10">
+            <div id="screen-shop" class="screen-layer hidden flex-col items-center justify-center bg-black/95 p-4">
                 <h2 class="text-lg mb-4 text-yellow-400 font-bold text-center">強化ショップ</h2>
                 <div id="shop-items" class="flex flex-col gap-3 w-full mb-6 overflow-y-auto max-h-64 px-2"></div>
                 <button onclick="window.resetGame()" class="w-full py-2 bg-gray-600 rounded text-sm">戻る</button>
             </div>
 
-            <div id="screen-formation" class="absolute inset-0 hidden flex flex-col items-center justify-center bg-black/95 p-4 z-10">
+            <div id="screen-formation" class="screen-layer hidden flex-col items-center justify-center bg-black/95 p-4">
                 <h2 class="text-lg mb-2 text-blue-300 font-bold text-center">チーム編成 (最大3)</h2>
                 <div id="collection-list" class="grid grid-cols-3 gap-2 w-full max-h-48 overflow-y-auto mb-4 bg-gray-900 p-2 border border-gray-600 rounded"></div>
                 <div class="bg-gray-800 p-3 rounded mb-4 w-full border border-gray-600">
@@ -697,7 +724,7 @@
                 </div>
             </div>
 
-            <div id="screen-battle" class="absolute inset-0 hidden flex flex-col items-center justify-between bg-black/80 py-4 z-10">
+            <div id="screen-battle" class="screen-layer hidden flex-col items-center justify-between bg-black/80 py-4">
                 <div id="battle-header" class="text-center text-yellow-400 text-[10px] font-bold"></div>
                 <div class="flex flex-col gap-1 w-full px-2 items-center">
                     <div id="battle-guide"></div>
@@ -709,7 +736,7 @@
                 <button id="battle-finish-btn" onclick="window.resetGame()" class="hidden mx-auto px-10 py-2 bg-yellow-500 text-black font-bold rounded">戻る</button>
             </div>
 
-            <div id="screen-matching" class="absolute inset-0 hidden flex items-center justify-center bg-black/90 z-20">
+            <div id="screen-matching" class="screen-layer hidden flex items-center justify-center bg-black/90">
                 <div class="animate-pulse text-yellow-400">マッチング中...</div>
             </div>
         </div>
