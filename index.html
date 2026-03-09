@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>Character Get & Battle - Filter Update</title>
+    <title>Character Get & Battle - Fix Click Issue</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <script type="module">
         import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
@@ -42,7 +42,7 @@
         let isMyTurn = false;
         let selectedActorIdx = -1; 
         let currentTurnCount = 0;
-        let currentFilter = 'ALL'; // 絞り込み状態
+        let currentFilter = 'ALL';
         const MAX_TURNS = 20;
 
         const canvas = document.getElementById('gameCanvas');
@@ -61,7 +61,7 @@
             gachaMain: document.getElementById('screen-gacha-main')
         };
 
-        // --- Firestore Save/Load ---
+        // --- Functions ---
         async function loadUserData(uid) {
             try {
                 const userRef = doc(db, 'artifacts', appId, 'users', uid, 'data', 'profile');
@@ -100,21 +100,17 @@
         onAuthStateChanged(auth, (u) => { user = u; if (u) loadUserData(u.uid); });
         initAuth();
 
-        // --- Gacha Logic ---
         function createCharacter(rank, owner = 'Player') {
             const name = CHAR_NAMES[rand(CHAR_NAMES.length)];
             const type = rand(4) === 0 ? 'healer' : 'attacker';
             let hp = 100, atk = 10, mp = type === 'healer' ? 3 : 0;
-            
             if (rank === 'A') { hp = 150; atk = 20; }
             else if (rank === 'S') { hp = 250; atk = 35; mp += 2; }
             else if (rank === 'SS') { hp = 450; atk = 60; mp += 5; }
-
             if (owner === 'Player') {
                 if (upgrades.atk) atk += 10;
                 if (upgrades.hp) hp += 30;
             }
-
             return {
                 id: Date.now() + Math.random().toString(36).substr(2, 9),
                 name, rank, type, hp, maxHp: hp, currentHp: hp, atk, mp, maxMp: mp, level: 1
@@ -135,14 +131,12 @@
             }
         }
 
-        // --- Export Functions to Global ---
         window.showScreen = (screenName) => {
             Object.values(screens).forEach(s => { if (s) s.classList.add('hidden'); });
             if (screenName && screens[screenName]) {
                 screens[screenName].classList.remove('hidden');
                 gameState = screenName;
             } else { gameState = 'playing'; }
-            
             if (screenName === 'formation') renderCollection();
             if (screenName === 'shop') renderShop();
             if (screenName === 'titles') renderTitles();
@@ -153,35 +147,23 @@
             const cost = count * 100;
             if (totalCoins < cost) return;
             totalCoins -= cost;
-
             window.showScreen('gachaMain');
             const box = document.getElementById('gacha-animation-box');
             const resultArea = document.getElementById('gacha-main-results');
             box.innerHTML = '<div class="gacha-egg">🥚</div>';
             resultArea.innerHTML = '';
-            
             setTimeout(() => {
                 box.innerHTML = '<div class="gacha-flash"></div>';
                 setTimeout(() => {
                     box.innerHTML = '';
                     for(let i=0; i<count; i++) {
                         const roll = Math.random();
-                        let rank = 'B';
-                        if (roll < 0.02) rank = 'SS'; // 2%
-                        else if (roll < 0.10) rank = 'S'; // 8%
-                        else if (roll < 0.30) rank = 'A'; // 20%
-                        
+                        let rank = roll < 0.02 ? 'SS' : (roll < 0.10 ? 'S' : (roll < 0.30 ? 'A' : 'B'));
                         const newChar = createCharacter(rank);
                         const { char, isNew } = addCharacterToCollection(newChar);
-                        
                         const card = document.createElement('div');
                         card.className = `p-2 bg-gray-800 border-2 border-gray-600 w-24 text-center text-[10px] rank-${char.rank} rounded shadow-lg animate-bounce`;
-                        const typeTag = char.type === 'healer' ? '<span class="text-green-300">[癒]</span>' : '<span class="text-red-400">[攻]</span>';
-                        card.innerHTML = `
-                            <span class="font-bold text-xs">RANK ${char.rank}</span><br>
-                            ${typeTag} ${char.name}<br>
-                            ${isNew ? '<span class="text-yellow-400">NEW!</span>' : `<span class="text-green-400">Lv.${char.level}</span>`}
-                        `;
+                        card.innerHTML = `<span class="font-bold text-xs">RANK ${char.rank}</span><br>${char.type==='healer'?'[癒]':'[攻]'} ${char.name}<br>${isNew?'NEW!':`Lv.${char.level}`}`;
                         resultArea.appendChild(card);
                     }
                     saveUserData();
@@ -189,20 +171,17 @@
             }, 1000);
         };
 
-        // --- Core UI Functions ---
         function updateMainUI() {
-            const scoreDisp = document.getElementById('top-score');
-            if (scoreDisp) scoreDisp.innerText = `${winCount} WINS | 🪙 ${totalCoins}`;
-            const titleDisp = document.getElementById('player-title');
-            if (titleDisp) titleDisp.innerText = getTitle().text;
+            document.getElementById('top-score').innerText = `${winCount} WINS | 🪙 ${totalCoins}`;
+            document.getElementById('player-title').innerText = getTitle().text;
         }
 
         const TITLE_LIST = [
-            { text: "👑不敗の覇者", condition: "通算50勝以上", check: () => winCount >= 50 },
-            { text: "⚔️ベテラン騎士", condition: "通算20勝以上", check: () => winCount >= 20 },
-            { text: "💰大富豪", condition: "所持金1000コイン以上", check: () => totalCoins >= 1000 },
-            { text: "🛡️究極超人", condition: "攻撃・HPの両方を強化済み", check: () => upgrades.atk && upgrades.hp },
-            { text: "🐣駆け出し冒険者", condition: "初期状態", check: () => true }
+            { text: "👑不敗の覇者", check: () => winCount >= 50 },
+            { text: "⚔️ベテラン騎士", check: () => winCount >= 20 },
+            { text: "💰大富豪", check: () => totalCoins >= 1000 },
+            { text: "🛡️究極超人", check: () => upgrades.atk && upgrades.hp },
+            { text: "🐣駆け出し冒険者", check: () => true }
         ];
 
         function getTitle() { return TITLE_LIST.find(t => t.check()) || TITLE_LIST[TITLE_LIST.length - 1]; }
@@ -235,10 +214,8 @@
             if (frameCount % 80 === 0) items.push({ type: 'card', x: rand(canvas.width - 30), y: -40, rank: RANKS[rand(RANKS.length)] });
             if (frameCount % 40 === 0) items.push({ type: 'coin', x: rand(canvas.width - 20), y: -40 });
             
-            // プレイヤー
             ctx.fillStyle = '#4ade80'; ctx.fillRect(playerX, 420, 40, 40);
 
-            // 障害物
             for (let i = obstacles.length - 1; i >= 0; i--) {
                 let o = obstacles[i]; o.y += baseSpeed;
                 ctx.fillStyle = '#f87171'; ctx.fillRect(o.x, o.y, o.w, o.h);
@@ -246,28 +223,15 @@
                 if (o.y > canvas.height) obstacles.splice(i, 1);
             }
             
-            // アイテム描画
             for (let i = items.length - 1; i >= 0; i--) {
                 let item = items[i]; item.y += baseSpeed * 0.8;
                 if (item.type === 'coin') {
                     ctx.fillStyle = '#fbbf24'; ctx.beginPath(); ctx.arc(item.x + 10, item.y + 10, 10, 0, Math.PI*2); ctx.fill();
                 } else {
-                    const cardColor = item.rank === 'S' ? '#facc15' : (item.rank === 'A' ? '#ef4444' : '#3b82f6');
-                    ctx.fillStyle = cardColor;
+                    ctx.fillStyle = item.rank === 'S' ? '#facc15' : (item.rank === 'A' ? '#ef4444' : '#3b82f6');
                     ctx.fillRect(item.x, item.y, 30, 40);
-                    ctx.strokeStyle = '#ffffff';
-                    ctx.lineWidth = 2;
-                    ctx.strokeRect(item.x, item.y, 30, 40);
-                    
-                    ctx.fillStyle = '#ffffff';
-                    ctx.font = 'bold 16px DotGothic16';
-                    ctx.textAlign = 'center';
-                    ctx.shadowColor = 'black';
-                    ctx.shadowBlur = 4;
-                    ctx.fillText(item.rank, item.x + 15, item.y + 26);
-                    ctx.shadowBlur = 0;
+                    ctx.fillStyle = '#ffffff'; ctx.fillText(item.rank, item.x + 15, item.y + 26);
                 }
-                
                 if (playerX < item.x + 30 && playerX + 40 > item.x && 420 < item.y + 40 && 460 > item.y) {
                     if (item.type === 'coin') collectedCoins += 10; else collectedCards.push(item.rank);
                     items.splice(i, 1);
@@ -276,11 +240,7 @@
             if (frameCount >= 1500) endQuest(); else gameLoop = requestAnimationFrame(update);
         }
 
-        async function endQuest() { 
-            cancelAnimationFrame(gameLoop); 
-            totalCoins += collectedCoins;
-            showGachaResult(); 
-        }
+        async function endQuest() { cancelAnimationFrame(gameLoop); totalCoins += collectedCoins; showGachaResult(); }
 
         function showGachaResult() {
             window.showScreen('gacha');
@@ -291,9 +251,8 @@
                 const newChar = createCharacter(rank);
                 const { char, isNew } = addCharacterToCollection(newChar);
                 const card = document.createElement('div');
-                card.className = `p-2 bg-gray-800 border-2 border-gray-600 w-20 text-center text-[10px] rank-${char.rank} rounded shadow-lg`;
-                const typeTag = char.type === 'healer' ? '<span class="text-green-300">[癒]</span>' : '<span class="text-red-400">[攻]</span>';
-                card.innerHTML = `<span class="font-bold text-xs">RANK ${char.rank}</span><br>${typeTag}${char.name}<br>${isNew ? 'NEW!' : 'UP!'}`;
+                card.className = `p-2 bg-gray-800 border-2 border-gray-600 w-20 text-center text-[10px] rank-${char.rank} rounded`;
+                card.innerHTML = `<span class="font-bold text-xs">${char.rank}</span><br>${char.name}<br>${isNew?'NEW!':'UP!'}`;
                 resultDiv.appendChild(card);
             });
             saveUserData();
@@ -302,18 +261,11 @@
 
         window.goToBattleMode = () => window.showScreen('formation');
 
-        // --- 編成画面の絞り込み機能 ---
         window.setFilter = (filter) => {
             currentFilter = filter;
-            // ボタンの見た目を更新
             document.querySelectorAll('.filter-btn').forEach(btn => {
-                if (btn.innerText === filter || (filter === 'ALL' && btn.innerText === 'すべて')) {
-                    btn.classList.add('bg-blue-600', 'border-white');
-                    btn.classList.remove('bg-gray-700', 'border-gray-500');
-                } else {
-                    btn.classList.remove('bg-blue-600', 'border-white');
-                    btn.classList.add('bg-gray-700', 'border-gray-500');
-                }
+                const isSelected = btn.getAttribute('data-filter') === filter;
+                btn.className = `filter-btn flex-1 py-1 text-[10px] rounded border ${isSelected ? 'bg-blue-600 border-white' : 'bg-gray-700 border-gray-500'}`;
             });
             renderCollection();
         };
@@ -321,25 +273,15 @@
         function renderCollection() {
             const list = document.getElementById('collection-list');
             list.innerHTML = '';
-            
-            // フィルター適用
             const filteredChars = myCharacters.filter(c => currentFilter === 'ALL' || c.rank === currentFilter);
-
-            if (filteredChars.length === 0) {
-                list.innerHTML = '<div class="col-span-3 text-center py-10 text-gray-500 text-xs">キャラがいません</div>';
-            }
-
+            if (filteredChars.length === 0) { list.innerHTML = '<div class="col-span-3 text-center py-10 text-gray-500 text-xs">なし</div>'; }
             filteredChars.forEach(char => {
                 const isSelected = selectedTeam.some(t => t.id === char.id);
                 const item = document.createElement('div');
-                item.className = `p-1 cursor-pointer border-2 ${isSelected ? 'border-yellow-400 bg-gray-700' : 'border-gray-800 bg-gray-900'} text-[10px] rounded relative`;
-                const typeTag = char.type === 'healer' ? '<span class="text-green-300">[癒]</span>' : '<span class="text-red-400">[攻]</span>';
-                item.innerHTML = `
-                    <span class="rank-${char.rank} font-bold">RANK ${char.rank}</span><br>
-                    ${typeTag} ${char.name} <span class="text-green-400">Lv.${char.level || 1}</span><br>
-                    HP:${char.hp} ATK:${char.atk}
-                `;
-                item.onclick = () => {
+                item.className = `p-1 cursor-pointer border-2 ${isSelected ? 'border-yellow-400 bg-gray-700' : 'border-gray-800 bg-gray-900'} text-[10px] rounded`;
+                item.innerHTML = `<span class="rank-${char.rank} font-bold">${char.rank}</span> ${char.type==='healer'?'[癒]':'[攻]'}<br>${char.name}<br>Lv.${char.level}`;
+                item.onclick = (e) => {
+                    e.stopPropagation();
                     const idx = selectedTeam.findIndex(t => t.id === char.id);
                     if (idx > -1) selectedTeam.splice(idx, 1);
                     else if (selectedTeam.length < 3) selectedTeam.push({...char, currentHp: char.hp, maxHp: char.hp, mp: char.maxMp});
@@ -354,20 +296,13 @@
         function renderShop() {
             const list = document.getElementById('shop-items');
             list.innerHTML = '';
-            const goods = [
-                { key: 'atk', name: '全キャラ攻撃力+10', cost: 300 },
-                { key: 'hp', name: '全キャラ最大HP+30', cost: 300 }
-            ];
+            const goods = [{ key: 'atk', name: '全攻撃+10', cost: 300 }, { key: 'hp', name: '全HP+30', cost: 300 }];
             goods.forEach(item => {
                 const purchased = upgrades[item.key] === 1;
                 const div = document.createElement('div');
                 div.className = `p-3 bg-gray-800 border-2 ${purchased ? 'border-green-500' : 'border-gray-600'} rounded flex justify-between items-center`;
-                div.innerHTML = `
-                    <div><div class="text-sm font-bold">${item.name}</div><div class="text-[9px] text-gray-400">🪙 ${item.cost}</div></div>
-                    <button ${purchased || totalCoins < item.cost ? 'disabled' : ''} onclick="buyUpgrade('${item.key}', ${item.cost})" class="px-3 py-1 text-xs bg-yellow-600 rounded">
-                        ${purchased ? '済' : '買'}
-                    </button>
-                `;
+                div.innerHTML = `<div><div class="text-sm font-bold">${item.name}</div><div class="text-[9px]">🪙 ${item.cost}</div></div>
+                    <button ${purchased || totalCoins < item.cost ? 'disabled' : ''} onclick="buyUpgrade('${item.key}', ${item.cost})" class="px-3 py-1 text-xs bg-yellow-600 rounded">購入</button>`;
                 list.appendChild(div);
             });
         }
@@ -388,18 +323,15 @@
                 const unlocked = t.check();
                 const div = document.createElement('div');
                 div.className = `p-2 border-b border-gray-700 flex justify-between items-center ${unlocked ? 'opacity-100' : 'opacity-40'}`;
-                div.innerHTML = `<div><div class="text-sm ${unlocked ? 'text-yellow-400 font-bold' : ''}">${t.text}</div></div><div>${unlocked ? '✅' : '🔒'}</div>`;
+                div.innerHTML = `<div class="text-sm ${unlocked ? 'text-yellow-400 font-bold' : ''}">${t.text}</div><div>${unlocked ? '✅' : '🔒'}</div>`;
                 list.appendChild(div);
             });
         }
 
-        // --- Battle ---
         window.startBattleAction = async () => {
             currentTurnCount = 1;
-            const modeInput = document.querySelector('input[name="battleMode"]:checked');
-            battleMode = modeInput ? modeInput.value : 'auto';
+            battleMode = document.querySelector('input[name="battleMode"]:checked').value;
             window.showScreen('battle');
-            document.getElementById('battle-log').innerHTML = '<div class="text-gray-500 text-[9px]">バトル開始！</div>';
             enemies = [createCharacter('B', 'CPU'), createCharacter('A', 'CPU'), createCharacter('S', 'CPU')].slice(0, selectedTeam.length);
             selectedTeam.forEach(c => { c.currentHp = c.maxHp; c.mp = c.maxMp; });
             updateBattleUI();
@@ -409,8 +341,7 @@
         function addLog(msg, colorClass = "text-white") {
             const logArea = document.getElementById('battle-log');
             const entry = document.createElement('div');
-            entry.className = `${colorClass} text-[9px] leading-tight mb-1`;
-            entry.innerText = msg;
+            entry.className = `${colorClass} text-[9px] mb-1`; entry.innerText = msg;
             logArea.prepend(entry);
             if (logArea.children.length > 20) logArea.removeChild(logArea.lastChild);
         }
@@ -426,11 +357,9 @@
                     if (actor.type === 'healer' && actor.mp > 0) {
                         const target = aliveSide[rand(aliveSide.length)];
                         target.currentHp = Math.min(target.maxHp, target.currentHp + actor.atk); actor.mp--;
-                        addLog(`${actor.name}が${target.name}を${actor.atk}回復した！`, "text-green-400");
                     } else if (aliveOpp.length > 0) {
                         const target = aliveOpp[rand(aliveOpp.length)];
                         target.currentHp = Math.max(0, target.currentHp - actor.atk);
-                        addLog(`${actor.name}が${target.name}に${actor.atk}ダメージ！`, isP ? "text-blue-300" : "text-red-400");
                     }
                 }
                 currentTurnCount++; updateBattleUI();
@@ -438,13 +367,13 @@
             }, 1000);
         }
 
-        function startSoloTurn() { if (checkWinCondition()) return; isMyTurn = true; selectedActorIdx = -1; updateBattleUI(); addLog("あなたのターンです", "text-yellow-400"); }
+        function startSoloTurn() { if (checkWinCondition()) return; isMyTurn = true; selectedActorIdx = -1; updateBattleUI(); }
         
         function checkWinCondition() {
             const pAlive = selectedTeam.filter(c => c.currentHp > 0), eAlive = enemies.filter(c => c.currentHp > 0);
-            if (eAlive.length === 0) { addLog("勝利！", "text-yellow-500 font-bold"); finishBattle(true); return true; }
-            if (pAlive.length === 0) { addLog("敗北...", "text-gray-500 font-bold"); finishBattle(false); return true; }
-            if (currentTurnCount >= MAX_TURNS) { addLog("時間切れ！", "text-orange-400"); finishBattle(pAlive.length >= eAlive.length); return true; }
+            if (eAlive.length === 0) { finishBattle(true); return true; }
+            if (pAlive.length === 0) { finishBattle(false); return true; }
+            if (currentTurnCount >= MAX_TURNS) { finishBattle(pAlive.length >= eAlive.length); return true; }
             return false;
         }
 
@@ -455,12 +384,12 @@
             const render = (c, i, isE) => {
                 const d = document.createElement('div');
                 const isSelected = !isE && selectedActorIdx === i;
-                d.className = `w-20 p-1 bg-gray-800 border-2 ${c.currentHp<=0?'opacity-30':'border-gray-500'} ${isSelected ? 'border-yellow-400 bg-gray-700 animate-pulse' : ''} text-[10px] text-center rounded relative cursor-pointer`;
-                if (!isE && isMyTurn) d.onclick = () => { if(selectedActorIdx===-1) {selectedActorIdx=i; updateBattleUI();} else {handleSoloAction(selectedActorIdx,i,isE); selectedActorIdx=-1;}};
-                if (isE && isMyTurn && selectedActorIdx!==-1) d.onclick = () => {handleSoloAction(selectedActorIdx,i,isE); selectedActorIdx=-1;};
-                
-                const typeTag = c.type === 'healer' ? '<span class="text-green-300">[癒]</span>' : '<span class="text-red-400">[攻]</span>';
-                d.innerHTML = `<span class="rank-${c.rank}">${c.rank}</span> ${typeTag}<br>${c.name}<br>HP:${Math.max(0,Math.floor(c.currentHp))}`;
+                d.className = `w-20 p-1 bg-gray-800 border-2 ${c.currentHp<=0?'opacity-30':'border-gray-500'} ${isSelected ? 'border-yellow-400' : ''} text-[10px] text-center rounded relative cursor-pointer`;
+                d.onclick = () => {
+                    if (isE) { if(isMyTurn && selectedActorIdx!==-1) handleSoloAction(selectedActorIdx, i, true); }
+                    else { if(isMyTurn) { selectedActorIdx = i; updateBattleUI(); } }
+                };
+                d.innerHTML = `<span class="rank-${c.rank}">${c.rank}</span><br>${c.name}<br>HP:${Math.floor(c.currentHp)}`;
                 return d;
             };
             selectedTeam.forEach((c,i)=>pUI.appendChild(render(c,i,false)));
@@ -469,24 +398,15 @@
 
         function handleSoloAction(a, t, isE) {
             isMyTurn = false;
-            const actor = selectedTeam[a], target = isE ? enemies[t] : selectedTeam[t];
-            if (actor.type === 'healer' && actor.mp > 0) { 
-                target.currentHp = Math.min(target.maxHp, target.currentHp + actor.atk); actor.mp--; 
-                addLog(`${actor.name}が${target.name}を${actor.atk}回復！`, "text-green-400");
-            }
-            else { 
-                target.currentHp = Math.max(0, target.currentHp - actor.atk); 
-                addLog(`${actor.name}が${target.name}に${actor.atk}ダメージ！`, "text-blue-300");
-            }
+            const actor = selectedTeam[a], target = enemies[t];
+            target.currentHp = Math.max(0, target.currentHp - actor.atk);
+            addLog(`${actor.name}の攻撃！`, "text-blue-300");
             currentTurnCount++; updateBattleUI();
             if (!checkWinCondition()) setTimeout(() => {
                 const eA = enemies.filter(c=>c.currentHp>0);
                 if(eA.length){
                     const ea=eA[rand(eA.length)], ta=selectedTeam.filter(c=>c.currentHp>0)[rand(selectedTeam.filter(c=>c.currentHp>0).length)];
-                    if(ta) {
-                        ta.currentHp=Math.max(0,ta.currentHp-ea.atk);
-                        addLog(`敵の${ea.name}が${ta.name}に${ea.atk}ダメージ！`, "text-red-400");
-                    }
+                    if(ta) ta.currentHp=Math.max(0,ta.currentHp-ea.atk);
                 }
                 updateBattleUI(); if(!checkWinCondition()) startSoloTurn();
             }, 600);
@@ -512,33 +432,45 @@
     <style>
         @import url('https://fonts.googleapis.com/css2?family=DotGothic16&display=swap');
         body { font-family: 'DotGothic16', sans-serif; background: #0a0a0a; color: white; overflow: hidden; margin: 0; }
-        canvas { display: block; background: #111; border: 4px solid #333; max-width: 100%; height: auto; touch-action: none; }
+        canvas { display: block; background: #111; border: 4px solid #333; max-width: 100%; height: auto; touch-action: none; z-index: 10; position: relative; }
         .hidden { display: none !important; }
-        .screen-layer { position: absolute; top: 0; left: 0; right: 0; bottom: 0; z-index: 100; display: flex; flex-direction: column; align-items: center; justify-content: center; }
+        
+        /* 画面レイヤーを最前面に、かつ非表示時はクリックを遮断しない */
+        .screen-layer { 
+            position: absolute; top: 0; left: 0; right: 0; bottom: 0; 
+            z-index: 100; display: flex; flex-direction: column; align-items: center; justify-content: center;
+            pointer-events: auto;
+        }
+        .screen-layer.hidden { pointer-events: none; }
+        
+        /* ボタン類を確実にクリック可能に */
+        button, input, label, [onclick] { 
+            pointer-events: auto !important; 
+            z-index: 110 !important; 
+            cursor: pointer;
+            position: relative;
+        }
+
         .rank-SS { color: #f472b6; text-shadow: 0 0 5px #f472b6; }
         .rank-S { color: #facc15; } .rank-A { color: #f87171; } .rank-B { color: #60a5fa; }
         
-        .gacha-egg { font-size: 80px; animation: wobble 0.5s infinite; }
-        @keyframes wobble { 0% { transform: rotate(0); } 25% { transform: rotate(-10deg); } 75% { transform: rotate(10deg); } 100% { transform: rotate(0); } }
-        .gacha-flash { width: 100%; height: 100%; background: white; animation: flash 0.5s forwards; }
-        @keyframes flash { from { opacity: 1; } to { opacity: 0; } }
-        
-        #battle-log { scrollbar-width: none; }
-        #battle-log::-webkit-scrollbar { display: none; }
+        #battle-log { scrollbar-width: none; pointer-events: none; }
     </style>
 </head>
 <body class="flex flex-col items-center justify-center min-h-screen">
-    <div id="ui-container" class="relative w-full max-w-[360px]">
-        <div class="p-2 flex justify-between items-center text-[10px] bg-black/50">
+    <div id="ui-container" class="relative w-full max-w-[360px] h-[550px]">
+        <!-- TOP UI -->
+        <div class="p-2 flex justify-between items-center text-[10px] bg-black/50 absolute top-0 w-full z-[120]">
             <div id="top-score">0 WINS | 🪙 0</div>
-            <div id="player-title" onclick="window.openTitles()" class="text-yellow-400 underline cursor-pointer">🐣駆け出し冒険者</div>
+            <div id="player-title" onclick="window.openTitles()" class="text-yellow-400 underline">🐣駆け出し冒険者</div>
         </div>
 
-        <div class="relative">
+        <div class="relative mt-8">
             <canvas id="gameCanvas" width="360" height="500"></canvas>
             
+            <!-- START -->
             <div id="screen-start" class="screen-layer bg-black/80 p-6">
-                <h1 class="text-2xl font-bold mb-6 text-green-400">QUEST & GACHA</h1>
+                <h1 class="text-2xl font-bold mb-6 text-green-400">QUEST & BATTLE</h1>
                 <input id="username-input" type="text" placeholder="名前を入力" class="w-full p-2 text-black rounded mb-4 text-center">
                 <button onclick="window.openDifficultySelect()" class="w-full p-4 bg-green-600 rounded mb-2 font-bold">クエスト開始</button>
                 <button onclick="window.goToBattleMode()" class="w-full p-4 bg-blue-600 rounded mb-2 font-bold">編成・バトル</button>
@@ -546,6 +478,7 @@
                 <button onclick="window.openShop()" class="w-full p-2 bg-yellow-600 rounded text-sm">ショップ</button>
             </div>
 
+            <!-- DIFFICULTY -->
             <div id="screen-difficulty" class="screen-layer hidden bg-black/90 p-6">
                 <h2 class="mb-4 text-green-400">難易度を選択</h2>
                 <div class="flex flex-col gap-2 w-full">
@@ -556,35 +489,36 @@
                 </div>
             </div>
 
+            <!-- GACHA MAIN -->
             <div id="screen-gacha-main" class="screen-layer hidden bg-black/95 p-6 text-center">
-                <h2 class="text-xl text-pink-400 mb-4">英雄召喚</h2>
-                <div id="gacha-animation-box" class="h-32 flex items-center justify-center mb-4"></div>
-                <div id="gacha-main-results" class="flex flex-wrap justify-center gap-2 mb-6 max-h-40 overflow-y-auto p-2"></div>
+                <h2 class="text-xl text-pink-400 mb-4 font-bold">英雄召喚</h2>
+                <div id="gacha-animation-box" class="h-24 flex items-center justify-center mb-4"></div>
+                <div id="gacha-main-results" class="flex flex-wrap justify-center gap-2 mb-4 max-h-40 overflow-y-auto"></div>
                 <div class="flex gap-2 w-full">
-                    <button onclick="window.pullGacha(1)" class="flex-1 py-3 bg-pink-600 rounded font-bold text-xs">1回召喚<br>(🪙100)</button>
-                    <button onclick="window.pullGacha(10)" class="flex-1 py-3 bg-pink-800 rounded font-bold text-xs">10回召喚<br>(🪙1000)</button>
+                    <button onclick="window.pullGacha(1)" class="flex-1 py-3 bg-pink-600 rounded font-bold text-xs">1回<br>(100)</button>
+                    <button onclick="window.pullGacha(10)" class="flex-1 py-3 bg-pink-800 rounded font-bold text-xs">10回<br>(1000)</button>
                 </div>
-                <button onclick="window.resetGame()" class="mt-6 text-gray-400 underline">戻る</button>
+                <button onclick="window.resetGame()" class="mt-4 text-gray-400 underline">閉じる</button>
             </div>
 
+            <!-- FORMATION -->
             <div id="screen-formation" class="screen-layer hidden bg-black/95 p-4">
-                <h2 class="mb-1 text-blue-300 font-bold text-sm">チーム編成 (最大3人)</h2>
+                <h2 class="mb-2 text-blue-300 font-bold text-sm">チーム編成 (最大3人)</h2>
                 
-                <!-- 絞り込みフィルター -->
-                <div class="flex gap-1 mb-2 w-full overflow-x-auto pb-1">
-                    <button onclick="window.setFilter('ALL')" class="filter-btn flex-1 py-1 text-[10px] bg-blue-600 border border-white rounded">すべて</button>
-                    <button onclick="window.setFilter('SS')" class="filter-btn flex-1 py-1 text-[10px] bg-gray-700 border border-gray-500 rounded rank-SS">SS</button>
-                    <button onclick="window.setFilter('S')" class="filter-btn flex-1 py-1 text-[10px] bg-gray-700 border border-gray-500 rounded rank-S">S</button>
-                    <button onclick="window.setFilter('A')" class="filter-btn flex-1 py-1 text-[10px] bg-gray-700 border border-gray-500 rounded rank-A">A</button>
-                    <button onclick="window.setFilter('B')" class="filter-btn flex-1 py-1 text-[10px] bg-gray-700 border border-gray-500 rounded rank-B">B</button>
+                <div class="flex gap-1 mb-2 w-full">
+                    <button onclick="window.setFilter('ALL')" data-filter="ALL" class="filter-btn flex-1 py-1 text-[10px] bg-blue-600 border border-white rounded">すべて</button>
+                    <button onclick="window.setFilter('SS')" data-filter="SS" class="filter-btn flex-1 py-1 text-[10px] bg-gray-700 border border-gray-500 rounded rank-SS">SS</button>
+                    <button onclick="window.setFilter('S')" data-filter="S" class="filter-btn flex-1 py-1 text-[10px] bg-gray-700 border border-gray-500 rounded rank-S">S</button>
+                    <button onclick="window.setFilter('A')" data-filter="A" class="filter-btn flex-1 py-1 text-[10px] bg-gray-700 border border-gray-500 rounded rank-A">A</button>
+                    <button onclick="window.setFilter('B')" data-filter="B" class="filter-btn flex-1 py-1 text-[10px] bg-gray-700 border border-gray-500 rounded rank-B">B</button>
                 </div>
 
                 <div id="collection-list" class="grid grid-cols-3 gap-2 w-full h-56 overflow-y-auto mb-3 bg-gray-900 p-2 border border-gray-600 rounded"></div>
                 
                 <div class="flex gap-2 w-full">
                     <div class="flex-1 flex justify-around items-center bg-gray-800 rounded p-1 text-[10px]">
-                        <label><input type="radio" name="battleMode" value="auto" checked> AUTO</label>
-                        <label><input type="radio" name="battleMode" value="manual"> MANUAL</label>
+                        <label class="flex items-center gap-1"><input type="radio" name="battleMode" value="auto" checked> AUTO</label>
+                        <label class="flex items-center gap-1"><input type="radio" name="battleMode" value="manual"> MANUAL</label>
                     </div>
                 </div>
                 <div class="flex gap-2 w-full mt-2">
@@ -593,35 +527,36 @@
                 </div>
             </div>
 
+            <!-- BATTLE -->
             <div id="screen-battle" class="screen-layer hidden bg-black/80 py-4 flex flex-col items-center">
-                <div id="battle-header" class="text-yellow-400 text-sm mb-4"></div>
-                
+                <div id="battle-header" class="text-yellow-400 text-sm mb-4 font-bold"></div>
                 <div class="w-full flex flex-col items-center gap-4 flex-grow justify-center">
                     <div id="enemy-team-ui" class="flex gap-2"></div>
-                    <div class="text-[10px] text-gray-500 font-bold py-1 px-4 bg-white/10 rounded-full">VERSUS</div>
+                    <div class="text-[10px] text-gray-500 font-bold py-1 px-4 bg-white/10 rounded-full">VS</div>
                     <div id="player-team-ui" class="flex gap-2"></div>
                 </div>
-
-                <div id="battle-log" class="w-[320px] h-24 bg-black/60 border border-gray-700 rounded p-2 overflow-y-auto mb-4 flex flex-col-reverse shadow-inner"></div>
-
-                <button id="battle-finish-btn" onclick="window.resetGame()" class="hidden px-8 py-2 bg-yellow-500 text-black font-bold rounded mb-4">戻る</button>
+                <div id="battle-log" class="w-[300px] h-20 bg-black/60 border border-gray-700 rounded p-2 overflow-y-auto mb-4 flex flex-col-reverse text-[9px]"></div>
+                <button id="battle-finish-btn" onclick="window.resetGame()" class="hidden px-8 py-2 bg-yellow-500 text-black font-bold rounded mb-4">終了</button>
             </div>
 
+            <!-- GACHA RESULT (AFTER QUEST) -->
             <div id="screen-gacha" class="screen-layer hidden bg-black/90 p-4">
-                <h2 class="text-xl text-green-400 mb-2">リザルト</h2>
+                <h2 class="text-xl text-green-400 mb-2 font-bold">リザルト</h2>
                 <div id="quest-coins" class="text-yellow-400 mb-4 text-sm"></div>
                 <div id="gacha-result" class="flex flex-wrap justify-center gap-2 mb-6"></div>
                 <button onclick="window.goToBattleMode()" class="w-full py-3 bg-blue-600 rounded font-bold">編成へ</button>
             </div>
 
+            <!-- SHOP -->
             <div id="screen-shop" class="screen-layer hidden bg-black/95 p-4">
                 <h2 class="mb-4 text-yellow-400 font-bold">強化ショップ</h2>
                 <div id="shop-items" class="flex flex-col gap-2 w-full mb-6"></div>
                 <button onclick="window.resetGame()" class="w-full py-2 bg-gray-600 rounded">戻る</button>
             </div>
             
+            <!-- TITLES -->
             <div id="screen-titles" class="screen-layer hidden bg-black/95 p-6">
-                <h2 class="mb-4 text-yellow-400 font-bold">称号</h2>
+                <h2 class="mb-4 text-yellow-400 font-bold">獲得称号</h2>
                 <div id="title-list" class="w-full flex flex-col bg-gray-900/50 rounded p-2 overflow-y-auto max-h-80"></div>
                 <button onclick="window.resetGame()" class="mt-6 px-8 py-2 bg-gray-700 rounded text-sm">戻る</button>
             </div>
