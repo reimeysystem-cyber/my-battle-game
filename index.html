@@ -61,7 +61,7 @@
         let frameCount = 0;
         let battleMode = 'auto'; 
         let isMyTurn = false;
-        let selectedActorIdx = -1; // マニュアル操作用：選択中の実行者
+        let selectedActorIdx = -1; 
         let currentTurnCount = 0;
         const MAX_TURNS = 20;
 
@@ -143,6 +143,9 @@
             if (screenName === 'shop') renderShop();
             if (screenName === 'titles') renderTitles();
             if (screenName === null) gameState = 'playing';
+            
+            // 画面遷移時にUIを最新の状態にする
+            updateMainUI();
         }
 
         function createCharacter(rank, ownerName = userName) {
@@ -225,17 +228,22 @@
                     ctx.fillStyle = "white"; ctx.font = "10px Arial"; ctx.fillText(item.rank, item.x + 15, item.y + 25);
                 }
                 if (playerX < item.x + 30 && playerX + 40 > item.x && 420 < item.y + 40 && 460 > item.y) {
-                    if (item.type === 'coin') collectedCoins += 10; else collectedCards.push(item.rank);
+                    if (item.type === 'coin') {
+                        collectedCoins += 10;
+                    } else {
+                        collectedCards.push(item.rank);
+                    }
                     items.splice(i, 1);
                 } else if (item.y > canvas.height) items.splice(i, 1);
             }
             if (frameCount >= 1500) endQuest(); else gameLoop = requestAnimationFrame(update);
         }
 
-        function endQuest() { 
+        async function endQuest() { 
             cancelAnimationFrame(gameLoop); 
             totalCoins += collectedCoins;
-            saveUserData();
+            // 重要な修正：値を更新した直後に保存し、UIに反映させる
+            await saveUserData();
             showGacha(); 
         }
 
@@ -254,6 +262,7 @@
             });
             localStorage.setItem('myChars', JSON.stringify(myCharacters));
             document.getElementById('quest-coins').innerText = `獲得コイン: +${collectedCoins}`;
+            updateMainUI(); // 表示を最新に
         }
 
         window.goToBattleMode = () => { showScreen('formation'); };
@@ -462,7 +471,7 @@
         function startSoloTurn() { 
             if (checkWinCondition()) return; 
             isMyTurn = true; 
-            selectedActorIdx = -1; // ターン開始時は未選択
+            selectedActorIdx = -1; 
             updateBattleUI(); 
         }
 
@@ -504,11 +513,9 @@
                     div.classList.add('cursor-pointer');
                     div.onclick = () => {
                         if (!isEnemy && selectedActorIdx === -1) {
-                            // 自分のキャラを選択
                             selectedActorIdx = idx;
                             updateBattleUI();
                         } else if (selectedActorIdx !== -1) {
-                            // 行動を確定
                             if (battleMode === 'multi') sendAction(selectedActorIdx, idx, isEnemy);
                             else handleSoloAction(selectedActorIdx, idx, isEnemy);
                             selectedActorIdx = -1;
