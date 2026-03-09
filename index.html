@@ -3,15 +3,14 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Character Get & Battle - Dual Mode</title>
+    <title>Character Get & Battle - Multi Mode</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <script type="module">
         import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
         import { getAuth, signInAnonymously, onAuthStateChanged, signInWithCustomToken } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
-        import { getFirestore, doc, setDoc, onSnapshot, updateDoc, deleteDoc, getDoc } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+        import { getFirestore, doc, setDoc, onSnapshot, updateDoc, deleteDoc, getDoc, collection, addDoc, query, orderBy, serverTimestamp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
 
         // --- Firebase Setup ---
-        // APIキーは空文字列に設定します。環境側で安全に注入されます。
         const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : {
             apiKey: "", 
             authDomain: "my-action-battle.firebaseapp.com",
@@ -30,14 +29,12 @@
         let user = null;
         let userName = "Player";
         let winCount = 0;
-        let leaderboard = [];
-
         let gameState = 'start';
         let playerX = 160;
-        let fallSpeedLevel = 1;
+        let difficultyLevel = 1; 
         let collectedCards = [];
-        let obstacles = [];
-        let items = [];
+        let items = []; 
+        let obstacles = []; 
         let myCharacters = JSON.parse(localStorage.getItem('myChars')) || [];
         let selectedTeam = [];
         let enemies = [];
@@ -45,10 +42,13 @@
         let frameCount = 0;
         let battleMode = 'auto'; 
         let isMyTurn = false;
-
-        // Turn Management
         let currentTurnCount = 0;
         const MAX_TURNS = 20;
+
+        // Multiplayer Vars
+        let roomId = "";
+        let playerRole = ""; 
+        let unsubscribeRoom = null;
 
         const canvas = document.getElementById('gameCanvas');
         const ctx = canvas.getContext('2d');
@@ -59,7 +59,9 @@
             start: document.getElementById('screen-start'),
             gacha: document.getElementById('screen-gacha'),
             formation: document.getElementById('screen-formation'),
-            battle: document.getElementById('screen-battle')
+            battle: document.getElementById('screen-battle'),
+            matching: document.getElementById('screen-matching'),
+            difficulty: document.getElementById('screen-difficulty')
         };
 
         const initAuth = async () => {
@@ -81,8 +83,11 @@
                 screens[screenName].classList.remove('hidden');
                 gameState = screenName;
             }
-            if (screenName === 'start') updateLeaderboardUI();
             if (screenName === 'formation') renderCollection();
+            if (screenName === 'battle') {
+                document.getElementById('battle-log').innerHTML = '';
+                log("バトル開始！");
+            }
         }
 
         function createCharacter(rank, ownerName = userName) {
@@ -96,27 +101,26 @@
             return { 
                 id: Math.random().toString(36).substr(2, 9), 
                 name, rank, hp, maxHp: hp, atk, owner: ownerName,
-                type: isHealer ? 'healer' : 'attacker'
+                type: isHealer ? 'healer' : 'attacker',
+                currentHp: hp
             };
         }
 
         // --- QUEST MODE ---
-        window.setSpeed = (lv) => {
-            fallSpeedLevel = lv;
-            document.querySelectorAll('.speed-btn').forEach((btn, i) => {
-                btn.className = i === lv ? 'speed-btn px-3 py-1 bg-yellow-500 text-black text-xs font-bold rounded' : 'speed-btn px-3 py-1 bg-gray-700 text-white text-xs rounded';
-            });
-        };
-
-        window.startQuest = () => {
+        window.openDifficultySelect = () => {
             const nameInput = document.getElementById('username-input');
             if (nameInput.value.trim()) userName = nameInput.value.trim();
+            showScreen('difficulty');
+        };
+
+        window.startQuest = (lv) => {
+            difficultyLevel = lv;
             showScreen(null); 
             gameState = 'playing';
             playerX = canvas.width / 2 - 20;
             collectedCards = [];
-            obstacles = [];
             items = [];
+            obstacles = [];
             frameCount = 0;
             if (gameLoop) cancelAnimationFrame(gameLoop);
             gameLoop = requestAnimationFrame(update);
@@ -126,57 +130,53 @@
             if (gameState !== 'playing') return;
             frameCount++;
             ctx.clearRect(0, 0, canvas.width, canvas.height);
-            const baseSpeed = 3 + (fallSpeedLevel * 2);
+            
+            const baseSpeed = 4 + (difficultyLevel * 3);
+            const spawnInterval = Math.max(15, 50 - (difficultyLevel * 15));
 
-            if (frameCount % Math.max(20, 60 - (fallSpeedLevel * 15)) === 0) {
-                const isBomb = rand(5) === 0;
-                obstacles.push({ x: rand(canvas.width - 30), y: -40, w: 30, h: 30, type: isBomb ? 'bomb' : 'block' });
+            if (frameCount % spawnInterval === 0) {
+                obstacles.push({ x: rand(canvas.width - 30), y: -40, w: 30, h: 30 });
             }
-            if (frameCount % 100 === 0) items.push({ x: rand(canvas.width - 30), y: -40, rank: RANKS[rand(RANKS.length)] });
-
-            ctx.fillStyle = '#4ade80'; ctx.fillRect(playerX, 420, 40, 40);
-            ctx.fillStyle = '#fff'; ctx.font = '10px Arial'; ctx.textAlign = 'center'; ctx.fillText(userName, playerX + 20, 415);
+            if (frameCount % 80 === 0) {
+                items.push({ x: rand(canvas.width - 30), y: -40, rank: RANKS[rand(RANKS.length)] });
+            }
+            
+            ctx.fillStyle = '#4ade80'; 
+            ctx.shadowBlur = 10;
+            ctx.shadowColor = '#4ade80';
+            ctx.fillRect(playerX, 420, 40, 40);
+            ctx.shadowBlur = 0;
 
             for (let i = obstacles.length - 1; i >= 0; i--) {
                 let o = obstacles[i]; o.y += baseSpeed;
-                if (o.type === 'bomb') {
-                    ctx.fillStyle = '#000'; ctx.beginPath(); ctx.arc(o.x+15, o.y+15, 15, 0, Math.PI*2); ctx.fill();
-                    ctx.fillStyle = '#f59e0b'; ctx.fillRect(o.x+12, o.y-5, 6, 10);
-                } else {
-                    ctx.fillStyle = '#f87171'; ctx.fillRect(o.x, o.y, o.w, o.h);
-                }
-                if (playerX < o.x + 30 && playerX + 40 > o.x && 420 < o.y + 30 && 460 > o.y) {
-                    if (o.type === 'bomb') { if (collectedCards.length > 0) collectedCards.pop(); obstacles.splice(i, 1); } 
-                    else { endQuest(); return; }
+                ctx.fillStyle = '#f87171'; 
+                ctx.fillRect(o.x, o.y, o.w, o.h);
+                if (playerX < o.x + o.w && playerX + 40 > o.x && 420 < o.y + o.h && 460 > o.y) {
+                    endQuest(); return;
                 }
                 if (o.y > canvas.height) obstacles.splice(i, 1);
             }
-
+            
             for (let i = items.length - 1; i >= 0; i--) {
-                let item = items[i]; item.y += baseSpeed * 0.8;
+                let item = items[i]; item.y += baseSpeed * 0.7;
                 ctx.fillStyle = item.rank === 'S' ? '#facc15' : (item.rank === 'A' ? '#f87171' : '#60a5fa');
                 ctx.fillRect(item.x, item.y, 35, 45);
-                ctx.strokeStyle = "#fff"; ctx.strokeRect(item.x, item.y, 35, 45);
-                ctx.fillStyle = "#fff"; ctx.font = "bold 10px Arial"; ctx.textAlign = "center";
-                ctx.fillText(`RANK`, item.x + 17, item.y + 15);
-                ctx.font = "bold 16px Arial"; ctx.fillText(item.rank, item.x + 17, item.y + 35);
-
+                ctx.fillStyle = "#fff"; ctx.font = "bold 16px Arial"; ctx.textAlign = "center";
+                ctx.fillText(item.rank, item.x + 17, item.y + 30);
                 if (playerX < item.x + 35 && playerX + 40 > item.x && 420 < item.y + 45 && 460 > item.y) {
                     collectedCards.push(item.rank); items.splice(i, 1);
                 } else if (item.y > canvas.height) items.splice(i, 1);
             }
 
-            ctx.textAlign = 'left'; ctx.fillStyle = '#fff'; ctx.font = '16px DotGothic16';
-            ctx.fillText(`Cards: ${collectedCards.length}`, 10, 25);
-            ctx.fillText(`Time: ${Math.floor((1200 - frameCount) / 60)}`, 280, 25);
+            ctx.fillStyle = "#333";
+            ctx.fillRect(10, 10, canvas.width - 20, 5);
+            ctx.fillStyle = "#fbbf24";
+            ctx.fillRect(10, 10, (canvas.width - 20) * (frameCount / 1200), 5);
 
             if (frameCount >= 1200) endQuest(); else gameLoop = requestAnimationFrame(update);
         }
 
-        function endQuest() {
-            cancelAnimationFrame(gameLoop);
-            showGacha();
-        }
+        function endQuest() { cancelAnimationFrame(gameLoop); showGacha(); }
 
         function showGacha() {
             showScreen('gacha');
@@ -188,13 +188,12 @@
                 myCharacters.push(char);
                 const card = document.createElement('div');
                 card.className = `p-2 bg-gray-800 border-2 border-gray-600 w-20 text-center text-[10px] rank-${rank} rounded shadow-lg`;
-                card.innerHTML = `<span class="font-bold text-xs">RANK ${rank}</span><br>${char.name}<br>${char.type === 'healer' ? 'HEAL' : 'ATK'}:${char.atk}`;
+                card.innerHTML = `<span class="font-bold text-xs">RANK ${rank}</span><br>${char.name}`;
                 resultDiv.appendChild(card);
             });
             localStorage.setItem('myChars', JSON.stringify(myCharacters));
         }
 
-        // --- BATTLE MODE ---
         window.goToBattleMode = () => {
             const nameInput = document.getElementById('username-input');
             if (nameInput.value.trim()) userName = nameInput.value.trim();
@@ -208,11 +207,11 @@
                 const isSelected = selectedTeam.some(t => t.id === char.id);
                 const item = document.createElement('div');
                 item.className = `p-1 cursor-pointer border-2 ${isSelected ? 'border-yellow-400 bg-gray-700' : 'border-gray-800 bg-gray-900'} text-[10px] rounded`;
-                item.innerHTML = `<span class="rank-${char.rank} font-bold">RANK ${char.rank}</span><br>${char.name} (${char.type === 'healer' ? '癒' : '攻'})<br>HP:${char.hp}<br>ATK:${char.atk}`;
+                item.innerHTML = `<span class="rank-${char.rank} font-bold">RANK ${char.rank}</span><br>${char.name}<br>HP:${char.hp} ATK:${char.atk}`;
                 item.onclick = () => {
                     const idx = selectedTeam.findIndex(t => t.id === char.id);
                     if (idx > -1) selectedTeam.splice(idx, 1);
-                    else if (selectedTeam.length < 3) selectedTeam.push(char);
+                    else if (selectedTeam.length < 3) selectedTeam.push({...char});
                     renderCollection();
                 };
                 list.appendChild(item);
@@ -220,134 +219,247 @@
             document.getElementById('battle-btn').disabled = selectedTeam.length === 0;
         }
 
-        window.autoForm = () => {
-            selectedTeam = [...myCharacters].sort((a, b) => (b.atk + b.hp) - (a.atk + a.hp)).slice(0, 3);
-            renderCollection();
+        window.startBattleAction = async () => {
+            if (!user) return;
+            currentTurnCount = 1;
+            battleMode = document.querySelector('input[name="battleMode"]:checked').value;
+            roomId = document.getElementById('room-id-input').value.trim();
+
+            if (battleMode === 'multi') {
+                if (!roomId) { alert("ルームキーを入力してください"); return; }
+                showScreen('matching');
+                joinMultiplayerRoom();
+            } else {
+                showScreen('battle');
+                runSoloBattle();
+            }
         };
 
-        window.startBattleAction = async () => {
-            currentTurnCount = 0;
-            battleMode = document.querySelector('input[name="battleMode"]:checked').value;
-            showScreen('battle');
-            runSoloBattle();
-        };
+        async function joinMultiplayerRoom() {
+            const roomRef = doc(db, 'artifacts', appId, 'public', 'data', 'rooms', roomId);
+            const snap = await getDoc(roomRef);
+            if (!snap.exists()) {
+                playerRole = "p1";
+                await setDoc(roomRef, { p1: { name: userName, team: selectedTeam, uid: user.uid }, p2: null, turn: 1, status: "waiting" });
+            } else {
+                const data = snap.data();
+                if (data.p2 && data.p2.uid !== user.uid) { alert("このルームは満員です"); showScreen('formation'); return; }
+                playerRole = "p2";
+                await updateDoc(roomRef, { p2: { name: userName, team: selectedTeam, uid: user.uid }, status: "ready" });
+            }
+            unsubscribeRoom = onSnapshot(roomRef, (docSnap) => {
+                const data = docSnap.data();
+                if (!data) return;
+                if (data.status === "ready") { showScreen('battle'); setupMultiBattle(data); }
+                checkOpponentAction(data);
+            });
+        }
+
+        function setupMultiBattle(data) {
+            currentTurnCount = data.turn;
+            if (playerRole === "p1") { enemies = data.p2.team; selectedTeam = data.p1.team; } 
+            else { enemies = data.p1.team; selectedTeam = data.p2.team; }
+            selectedTeam.forEach(c => c.currentHp = c.currentHp || c.maxHp);
+            enemies.forEach(c => c.currentHp = c.currentHp || c.maxHp);
+            startMultiTurn();
+        }
+
+        function startMultiTurn() {
+            if (checkWinCondition()) return;
+            isMyTurn = true;
+            log(`ターン ${currentTurnCount}: 行動を選択してください`);
+            updateBattleUI();
+        }
+
+        async function sendAction(actorIdx, targetIdx, isEnemyTarget) {
+            isMyTurn = false;
+            const action = { turn: currentTurnCount, role: playerRole, actorIdx, targetIdx, isEnemyTarget, timestamp: serverTimestamp() };
+            const actionRef = doc(db, 'artifacts', appId, 'public', 'data', 'rooms', roomId, 'actions', `${currentTurnCount}_${playerRole}`);
+            await setDoc(actionRef, action);
+            log("相手の行動を待っています...");
+            updateBattleUI();
+        }
+
+        function checkOpponentAction(roomData) {
+            if (gameState !== 'battle') return;
+            const oppRole = playerRole === "p1" ? "p2" : "p1";
+            const actionRef = doc(db, 'artifacts', appId, 'public', 'data', 'rooms', roomId, 'actions', `${currentTurnCount}_${oppRole}`);
+            onSnapshot(actionRef, (snap) => { if (snap.exists() && !isMyTurn) checkBothActionsDone(); });
+        }
+
+        async function checkBothActionsDone() {
+            const p1ActRef = doc(db, 'artifacts', appId, 'public', 'data', 'rooms', roomId, 'actions', `${currentTurnCount}_p1`);
+            const p2ActRef = doc(db, 'artifacts', appId, 'public', 'data', 'rooms', roomId, 'actions', `${currentTurnCount}_p2`);
+            const [s1, s2] = await Promise.all([getDoc(p1ActRef), getDoc(p2ActRef)]);
+            if (s1.exists() && s2.exists()) {
+                applyAction(s1.data(), "p1");
+                applyAction(s2.data(), "p2");
+                currentTurnCount++;
+                if (playerRole === "p1") { await updateDoc(doc(db, 'artifacts', appId, 'public', 'data', 'rooms', roomId), { turn: currentTurnCount }); }
+                setTimeout(startMultiTurn, 1000);
+            }
+        }
+
+        function applyAction(act, role) {
+            const isMeActor = (role === playerRole);
+            const actorList = isMeActor ? selectedTeam : enemies;
+            const targetList = act.isEnemyTarget ? (isMeActor ? enemies : selectedTeam) : (isMeActor ? selectedTeam : enemies);
+            const actor = actorList[act.actorIdx];
+            const target = targetList[act.targetIdx];
+            if (actor.type === 'healer') { 
+                target.currentHp = Math.min(target.maxHp, target.currentHp + actor.atk); 
+                log(`${actor.owner}の${actor.name}が回復！ (+${actor.atk})`); 
+            } else { 
+                target.currentHp = Math.max(0, target.currentHp - actor.atk); 
+                log(`${actor.owner}の${actor.name}が${target.name}を攻撃！ (-${actor.atk})`); 
+            }
+            updateBattleUI();
+        }
 
         function runSoloBattle() {
-            document.getElementById('battle-finish-btn').classList.add('hidden');
-            document.getElementById('battle-log').innerHTML = '';
             enemies = [createCharacter('B', 'CPU'), createCharacter('A', 'CPU'), createCharacter('S', 'CPU')].slice(0, selectedTeam.length);
-            selectedTeam.forEach(c => c.hp = c.maxHp);
-            if (battleMode === 'auto') runAutoBattle();
-            else startSoloPlayerTurn();
+            selectedTeam.forEach(c => c.currentHp = c.maxHp);
+            enemies.forEach(c => c.currentHp = c.maxHp);
+            if (battleMode === 'auto') runAutoBattle(); else startSoloTurn();
+        }
+
+        function runAutoBattle() {
+            const interval = setInterval(() => {
+                if (checkWinCondition()) { clearInterval(interval); return; }
+                const isP = rand(2) === 0;
+                const side = isP ? selectedTeam : enemies;
+                const opp = isP ? enemies : selectedTeam;
+                const aliveSide = side.filter(c => c.currentHp > 0);
+                if (aliveSide.length === 0) return;
+                const actor = aliveSide[rand(aliveSide.length)];
+                
+                if (actor.type === 'healer') {
+                    const t = aliveSide[rand(aliveSide.length)];
+                    t.currentHp = Math.min(t.maxHp, t.currentHp + actor.atk);
+                    log(`${actor.owner}の${actor.name}が回復！ (+${actor.atk})`);
+                } else {
+                    const aliveOpp = opp.filter(c => c.currentHp > 0);
+                    if (aliveOpp.length > 0) {
+                        const t = aliveOpp[rand(aliveOpp.length)];
+                        t.currentHp = Math.max(0, t.currentHp - actor.atk);
+                        log(`${actor.owner}の${actor.name}が${t.name}に攻撃！ (-${actor.atk})`);
+                    }
+                }
+                currentTurnCount++;
+                updateBattleUI();
+            }, 800);
+        }
+
+        function startSoloTurn() { 
+            if (checkWinCondition()) return; 
+            isMyTurn = true; 
+            log(`ターン ${currentTurnCount}: 攻撃対象をタップ！`);
+            updateBattleUI(); 
         }
 
         function checkWinCondition() {
-            const pAlive = selectedTeam.filter(c => c.hp > 0);
-            const eAlive = enemies.filter(c => c.hp > 0);
-
-            // 1. 全滅判定
+            const pAlive = selectedTeam.filter(c => c.currentHp > 0);
+            const eAlive = enemies.filter(c => c.currentHp > 0);
             if (eAlive.length === 0) { finishBattle(true); return true; }
             if (pAlive.length === 0) { finishBattle(false); return true; }
-
-            // 2. ターン制限判定（泥試合防止）
             if (currentTurnCount >= MAX_TURNS) {
-                log("--- タイムアップ！ ---");
-                if (pAlive.length > eAlive.length) finishBattle(true);
-                else if (pAlive.length < eAlive.length) finishBattle(false);
-                else {
-                    const pTotal = pAlive.reduce((s, c) => s + c.hp, 0);
-                    const eTotal = eAlive.reduce((s, c) => s + c.hp, 0);
-                    finishBattle(pTotal >= eTotal);
-                }
+                const pTotal = pAlive.reduce((s,c)=>s+c.currentHp,0);
+                const eTotal = eAlive.reduce((s,c)=>s+c.currentHp,0);
+                finishBattle(pTotal >= eTotal);
                 return true;
             }
             return false;
         }
 
-        function runAutoBattle() {
-            const turnInterval = setInterval(() => {
-                if (checkWinCondition()) { clearInterval(turnInterval); return; }
-                
-                currentTurnCount++;
-                const isP = rand(2) === 0;
-                const side = isP ? selectedTeam : enemies;
-                const aliveSide = side.filter(c => c.hp > 0);
-                const actor = aliveSide[rand(aliveSide.length)];
-                
-                if (actor.type === 'healer') {
-                    const target = aliveSide[rand(aliveSide.length)];
-                    target.hp = Math.min(target.maxHp, target.hp + actor.atk);
-                    log(`${isP ? userName : 'CPU'}の${actor.name}が回復！`);
-                } else {
-                    const target = (isP ? enemies : selectedTeam).filter(c => c.hp > 0)[rand((isP ? enemies : selectedTeam).filter(c => c.hp > 0).length)];
-                    target.hp -= actor.atk;
-                    log(`${isP ? userName : 'CPU'}の${actor.name}が攻撃！`);
-                }
-                updateSoloUI();
-            }, 800);
-        }
-
-        function startSoloPlayerTurn() {
-            if (checkWinCondition()) return;
-            isMyTurn = true; log(`ターン ${currentTurnCount}/${MAX_TURNS}: 対象を選択`); updateSoloUI();
-        }
-
-        function updateSoloUI() {
+        function updateBattleUI() {
             const pUI = document.getElementById('player-team-ui');
             const eUI = document.getElementById('enemy-team-ui');
+            if (!pUI || !eUI) return;
             pUI.innerHTML = ''; eUI.innerHTML = '';
             document.getElementById('battle-header').innerText = `TURN ${currentTurnCount} / ${MAX_TURNS}`;
-
-            const createCardUI = (c, isEnemy) => {
+            
+            const renderCard = (c, idx, isEnemy) => {
                 const div = document.createElement('div');
-                const isDead = c.hp <= 0;
-                div.className = `w-20 p-1 bg-gray-800 border-2 ${isDead ? 'opacity-30 border-gray-900' : 'border-gray-500'} text-[10px] text-center rounded`;
+                const isDead = c.currentHp <= 0;
+                div.className = `w-20 p-1 bg-gray-800 border-2 ${isDead ? 'opacity-30 border-gray-900' : 'border-gray-500'} text-[10px] text-center rounded transition-all`;
                 if (!isDead && isMyTurn) {
-                    div.classList.add('target-glow');
+                    div.classList.add('target-glow', 'cursor-pointer', 'scale-105');
                     div.onclick = () => {
-                        currentTurnCount++;
-                        const aliveP = selectedTeam.filter(c => c.hp > 0);
-                        const actor = aliveP[rand(aliveP.length)];
-                        if ((actor.type === 'healer' && isEnemy) || (actor.type === 'attacker' && !isEnemy)) return;
-                        isMyTurn = false;
-                        if (actor.type === 'healer') { c.hp = Math.min(c.maxHp, c.hp + actor.atk); log(`味方を回復！ +${actor.atk}`); } 
-                        else { c.hp -= actor.atk; log(`敵に攻撃！ -${actor.atk}`); }
-                        updateSoloUI();
-                        setTimeout(() => {
-                            if (!checkWinCondition()) {
-                                const eAlive = enemies.filter(c => c.hp > 0);
-                                const eActor = eAlive[rand(eAlive.length)];
-                                if (eActor.type === 'healer') {
-                                    const t = eAlive[rand(eAlive.length)]; t.hp = Math.min(t.maxHp, t.hp + eActor.atk); log(`敵CPUが回復！`);
-                                } else {
-                                    const t = selectedTeam.filter(c => c.hp > 0)[rand(selectedTeam.filter(c => c.hp > 0).length)];
-                                    t.hp -= eActor.atk; log(`敵CPUが反撃！`);
-                                }
-                                updateSoloUI(); setTimeout(startSoloPlayerTurn, 600);
-                            }
-                        }, 600);
+                        const actorIdx = selectedTeam.findIndex(a => a.currentHp > 0); 
+                        if (battleMode === 'multi') sendAction(actorIdx, idx, isEnemy);
+                        else handleSoloAction(actorIdx, idx, isEnemy);
                     };
                 }
-                div.innerHTML = `<span class="rank-${c.rank} font-bold text-[11px]">RANK ${c.rank}</span><br>${c.name}<br>HP:${Math.max(0, Math.floor(c.hp))}<br>ATK:${c.atk}`;
+                div.innerHTML = `<span class="rank-${c.rank} font-bold">RANK ${c.rank}</span><br>${c.name}<br>HP:${Math.max(0, Math.floor(c.currentHp))}`;
                 return div;
             };
-            selectedTeam.forEach(c => pUI.appendChild(createCardUI(c, false)));
-            enemies.forEach(c => eUI.appendChild(createCardUI(c, true)));
+            selectedTeam.forEach((c, i) => pUI.appendChild(renderCard(c, i, false)));
+            enemies.forEach((c, i) => eUI.appendChild(renderCard(c, i, true)));
         }
 
-        function log(msg) { const l = document.getElementById('battle-log'); l.innerHTML += msg + '<br>'; l.scrollTop = l.scrollHeight; }
+        function handleSoloAction(aIdx, tIdx, isEnemy) {
+            isMyTurn = false;
+            const actor = selectedTeam[aIdx];
+            const target = isEnemy ? enemies[tIdx] : selectedTeam[tIdx];
+            if (actor.type === 'healer') {
+                target.currentHp = Math.min(target.maxHp, target.currentHp + actor.atk);
+                log(`${actor.owner}の${actor.name}が回復！ (+${actor.atk})`);
+            } else {
+                target.currentHp = Math.max(0, target.currentHp - actor.atk);
+                log(`${actor.owner}の${actor.name}が${target.name}を攻撃！ (-${actor.atk})`);
+            }
+            currentTurnCount++;
+            updateBattleUI();
+            
+            setTimeout(() => {
+                if (!checkWinCondition()) {
+                    const aliveEnemies = enemies.filter(c => c.currentHp > 0);
+                    if (aliveEnemies.length > 0) {
+                        const eActor = aliveEnemies[rand(aliveEnemies.length)];
+                        const alivePlayers = selectedTeam.filter(c => c.currentHp > 0);
+                        if (alivePlayers.length > 0) {
+                            const t = alivePlayers[rand(alivePlayers.length)];
+                            t.currentHp = Math.max(0, t.currentHp - eActor.atk);
+                            log(`CPUの${eActor.name}が${t.name}を攻撃！ (-${eActor.atk})`);
+                        }
+                    }
+                    updateBattleUI();
+                    setTimeout(startSoloTurn, 600);
+                }
+            }, 600);
+        }
+
+        function log(msg) { 
+            const l = document.getElementById('battle-log'); 
+            if (!l) return;
+            const entry = document.createElement('div');
+            entry.className = "border-l-2 border-yellow-500 pl-2 mb-1 bg-white/5 py-1";
+            entry.innerText = msg;
+            l.appendChild(entry);
+            l.scrollTop = l.scrollHeight; 
+        }
 
         function finishBattle(isWin) {
-            isMyTurn = false; document.getElementById('battle-finish-btn').classList.remove('hidden');
-            if (isWin) { winCount++; document.getElementById('top-score').innerText = `WINS: ${winCount}`; log("VICTORY!"); }
-            else { winCount = 0; document.getElementById('top-score').innerText = `WINS: 0`; log("DEFEAT..."); }
+            isMyTurn = false; 
+            const btn = document.getElementById('battle-finish-btn');
+            if (btn) btn.classList.remove('hidden');
+            if (isWin) { 
+                winCount++; 
+                document.getElementById('top-score').innerText = `WINS: ${winCount}`; 
+                log("VICTORY"); 
+            } else { 
+                winCount = 0; 
+                document.getElementById('top-score').innerText = `WINS: 0`; 
+                log("LOSE..."); 
+            }
+            if (unsubscribeRoom) unsubscribeRoom();
         }
 
-        function updateLeaderboardUI() {
-            // リーダーボード表示（省略可）
-        }
-
-        window.resetGame = () => { showScreen('start'); ctx.clearRect(0, 0, canvas.width, canvas.height); };
+        window.resetGame = () => { 
+            showScreen('start'); 
+            ctx.clearRect(0, 0, canvas.width, canvas.height); 
+            selectedTeam = [];
+        };
 
         window.addEventListener('keydown', e => {
             if (gameState !== 'playing') return;
@@ -370,75 +482,92 @@
         .rank-A { color: #f87171; text-shadow: 0 0 5px #f87171; }
         .rank-B { color: #60a5fa; text-shadow: 0 0 5px #60a5fa; }
         .target-glow { animation: glow 1s infinite alternate; }
-        @keyframes glow { from { border-color: #f00; } to { border-color: #fff; box-shadow: 0 0 10px #fff; } }
+        @keyframes glow { from { border-color: #555; } to { border-color: #fff; box-shadow: 0 0 8px #fff; } }
         .hidden { display: none !important; }
+        #battle-log::-webkit-scrollbar { width: 4px; }
+        #battle-log::-webkit-scrollbar-track { background: transparent; }
+        #battle-log::-webkit-scrollbar-thumb { background: #444; border-radius: 2px; }
     </style>
 </head>
 <body class="flex flex-col items-center justify-center min-h-screen">
     <div id="ui-container" class="w-full max-w-md p-2">
-        <div class="flex justify-between w-full items-center mb-2 px-2">
-            <h1 class="text-lg text-yellow-400 italic">QUEST & BATTLE DUAL</h1>
+        <div class="flex justify-between items-center mb-2 px-2">
+            <h1 class="text-lg text-yellow-400 italic font-bold">QUEST & BATTLE</h1>
             <div id="top-score" class="text-xs bg-gray-800 px-2 py-1 rounded">WINS: 0</div>
         </div>
         <div id="game-container" class="relative">
             <canvas id="gameCanvas" width="360" height="500"></canvas>
-            <!-- START -->
+            
+            <!-- START SCREEN -->
             <div id="screen-start" class="absolute inset-0 flex flex-col items-center justify-center bg-black/80 p-6">
                 <input id="username-input" type="text" maxlength="10" placeholder="Player Name" class="w-full p-2 text-black rounded text-sm text-center mb-6">
                 <div class="grid grid-cols-2 gap-4 w-full mb-8">
-                    <button onclick="startQuest()" class="flex flex-col items-center p-4 bg-green-700 hover:bg-green-600 rounded-lg border-2 border-green-400">
-                        <span class="text-2xl mb-1">🏃‍♂️</span>
-                        <span class="font-bold">QUEST</span>
-                    </button>
-                    <button onclick="goToBattleMode()" class="flex flex-col items-center p-4 bg-red-700 hover:bg-red-600 rounded-lg border-2 border-red-400">
-                        <span class="text-2xl mb-1">⚔️</span>
-                        <span class="font-bold">BATTLE</span>
-                    </button>
-                </div>
-                <div class="w-full text-center bg-gray-900 p-3 rounded mb-4">
-                    <p class="text-[10px] text-gray-400 mb-2">DIFFICULTY</p>
-                    <div class="flex justify-center gap-2">
-                        <button onclick="setSpeed(0)" class="speed-btn px-3 py-1 bg-gray-700 text-white text-xs rounded">EASY</button>
-                        <button onclick="setSpeed(1)" class="speed-btn px-3 py-1 bg-yellow-500 text-black text-xs font-bold rounded">NORMAL</button>
-                        <button onclick="setSpeed(2)" class="speed-btn px-3 py-1 bg-gray-700 text-white text-xs rounded">HARD</button>
-                    </div>
+                    <button onclick="openDifficultySelect()" class="p-4 bg-green-700 hover:bg-green-600 rounded-lg border-2 border-green-400 font-bold shadow-lg shadow-green-900/50">QUEST</button>
+                    <button onclick="goToBattleMode()" class="p-4 bg-red-700 hover:bg-red-600 rounded-lg border-2 border-red-400 font-bold shadow-lg shadow-red-900/50">BATTLE</button>
                 </div>
             </div>
-            <!-- GACHA -->
-            <div id="screen-gacha" class="absolute inset-0 hidden flex flex-col items-center justify-center bg-black/90">
-                <h2 class="text-xl mb-4 text-green-400">CARDS OBTAINED!</h2>
-                <div id="gacha-result" class="flex flex-wrap justify-center gap-2 mb-6 max-h-60 overflow-y-auto p-2"></div>
-                <div class="flex gap-2">
-                    <button onclick="resetGame()" class="px-6 py-2 bg-gray-600 text-white text-xs rounded">MENU</button>
-                    <button onclick="goToBattleMode()" class="px-6 py-2 bg-blue-600 text-white text-xs rounded font-bold">TEAM SETTINGS</button>
+
+            <!-- DIFFICULTY SELECT -->
+            <div id="screen-difficulty" class="absolute inset-0 hidden flex flex-col items-center justify-center bg-black/90 p-6">
+                <h2 class="text-lg mb-6 text-green-400">SELECT DIFFICULTY</h2>
+                <div class="flex flex-col gap-4 w-full">
+                    <button onclick="startQuest(0)" class="p-3 bg-blue-900 border border-blue-400 rounded hover:bg-blue-800">EASY</button>
+                    <button onclick="startQuest(1)" class="p-3 bg-yellow-900 border border-yellow-400 rounded hover:bg-yellow-800">NORMAL</button>
+                    <button onclick="startQuest(2)" class="p-3 bg-red-900 border border-red-400 rounded hover:bg-red-800">HARD</button>
+                    <button onclick="resetGame()" class="mt-4 p-2 text-sm text-gray-400 underline">BACK</button>
                 </div>
             </div>
-            <!-- FORMATION -->
-            <div id="screen-formation" class="absolute inset-0 hidden flex flex-col items-center justify-center bg-black/90 p-4">
-                <h2 class="text-lg mb-2 text-blue-300">BATTLE TEAM</h2>
-                <div id="collection-list" class="grid grid-cols-3 gap-2 w-full max-h-48 overflow-y-auto mb-4 bg-gray-800 p-2 border border-gray-600"></div>
-                <div class="bg-gray-700/50 p-2 rounded mb-4 w-full text-center">
-                    <div class="flex justify-center gap-4 text-xs mb-2">
-                        <label class="flex items-center gap-1"><input type="radio" name="battleMode" value="auto" checked> AUTO</label>
-                        <label class="flex items-center gap-1"><input type="radio" name="battleMode" value="manual"> SOLO</label>
+
+            <!-- GACHA SCREEN -->
+            <div id="screen-gacha" class="absolute inset-0 hidden flex flex-col items-center justify-center bg-black/90 p-4">
+                <h2 class="text-xl mb-4 text-green-400">CARDS GET!</h2>
+                <div id="gacha-result" class="flex flex-wrap justify-center gap-2 mb-6"></div>
+                <button onclick="goToBattleMode()" class="w-full py-3 bg-blue-600 rounded font-bold">TEAM SETTINGS</button>
+            </div>
+
+            <!-- FORMATION SCREEN -->
+            <div id="screen-formation" class="absolute inset-0 hidden flex flex-col items-center justify-center bg-black/95 p-4">
+                <h2 class="text-lg mb-2 text-blue-300">TEAM (MAX 3)</h2>
+                <div id="collection-list" class="grid grid-cols-3 gap-2 w-full max-h-48 overflow-y-auto mb-4 bg-gray-900 p-2 border border-gray-600 rounded shadow-inner"></div>
+                
+                <div class="bg-gray-800 p-3 rounded mb-4 w-full border border-gray-600">
+                    <div class="flex justify-around text-xs mb-3">
+                        <label class="flex items-center gap-1 cursor-pointer"><input type="radio" name="battleMode" value="auto" checked> AUTO</label>
+                        <label class="flex items-center gap-1 cursor-pointer"><input type="radio" name="battleMode" value="manual"> SOLO</label>
+                        <label class="flex items-center gap-1 cursor-pointer"><input type="radio" name="battleMode" value="multi"> MULTI</label>
                     </div>
+                    <input id="room-id-input" type="text" placeholder="ROOM KEY" class="w-full p-2 text-black text-xs rounded text-center">
                 </div>
+
                 <div class="flex gap-2 w-full">
-                    <button onclick="resetGame()" class="flex-1 py-2 bg-gray-600 text-white text-xs rounded">BACK</button>
-                    <button onclick="autoForm()" class="flex-1 py-2 bg-blue-800 text-white text-xs rounded">AUTO</button>
-                    <button id="battle-btn" onclick="startBattleAction()" class="flex-1 py-2 bg-red-600 text-white font-bold text-xs rounded">FIGHT!</button>
+                    <button onclick="resetGame()" class="flex-1 py-2 bg-gray-600 rounded text-sm hover:bg-gray-500">BACK</button>
+                    <button id="battle-btn" onclick="startBattleAction()" class="flex-[2] py-2 bg-red-600 font-bold rounded text-sm hover:bg-red-500 disabled:bg-gray-700">START BATTLE</button>
                 </div>
             </div>
-            <!-- BATTLE -->
-            <div id="screen-battle" class="absolute inset-0 hidden flex flex-col items-center justify-center bg-black/80">
-                <div id="battle-header" class="text-center mb-2 text-yellow-400 text-sm font-bold"></div>
-                <div class="flex flex-col gap-2 w-full px-2">
+
+            <!-- MATCHING SCREEN -->
+            <div id="screen-matching" class="absolute inset-0 hidden flex flex-col items-center justify-center bg-black/90">
+                <div class="animate-pulse text-yellow-400 font-bold">MATCHING...</div>
+            </div>
+
+            <!-- BATTLE SCREEN -->
+            <div id="screen-battle" class="absolute inset-0 hidden flex flex-col items-center justify-between bg-black/80 py-4">
+                <div id="battle-header" class="text-center text-yellow-400 text-sm font-bold bg-black/50 w-full py-1"></div>
+                
+                <div class="flex flex-col gap-4 w-full px-2">
                     <div id="enemy-team-ui" class="flex justify-center gap-2"></div>
-                    <div class="text-center text-white/20 text-xs font-bold py-1">VS</div>
+                    <div class="relative flex items-center justify-center">
+                        <div class="absolute w-full h-[1px] bg-white/10"></div>
+                        <div class="z-10 bg-black px-4 text-white/40 text-[10px]">VERSUS</div>
+                    </div>
                     <div id="player-team-ui" class="flex justify-center gap-2"></div>
                 </div>
-                <div id="battle-log" class="text-[9px] h-20 overflow-y-auto w-full px-4 text-gray-400 mt-4 bg-black/40 py-2 border-y border-white/10"></div>
-                <button id="battle-finish-btn" onclick="resetGame()" class="hidden mt-4 px-8 py-2 bg-yellow-500 text-black font-bold rounded">BACK TO MENU</button>
+
+                <div class="w-full px-2 mt-4">
+                    <div id="battle-log" class="text-[10px] h-32 overflow-y-auto w-full px-3 text-gray-200 bg-black/60 py-2 border border-white/10 rounded"></div>
+                </div>
+
+                <button id="battle-finish-btn" onclick="resetGame()" class="hidden mx-auto mt-4 px-10 py-2 bg-yellow-500 text-black font-bold rounded hover:bg-yellow-400">DONE</button>
             </div>
         </div>
     </div>
