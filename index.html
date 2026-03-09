@@ -11,35 +11,12 @@
         import { getFirestore, doc, setDoc, onSnapshot, updateDoc, deleteDoc, getDoc, collection, addDoc, query, orderBy, serverTimestamp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
 
         // --- Firebase Configuration ---
-        let app, auth, db;
+        const firebaseConfig = JSON.parse(__firebase_config);
+        const app = initializeApp(firebaseConfig);
+        const auth = getAuth(app);
+        const db = getFirestore(app);
         const appId = typeof __app_id !== 'undefined' ? __app_id : "my-battle-app-v4";
 
-        function initFirebase() {
-            if (db) return true;
-            try {
-                const configStr = typeof __firebase_config !== 'undefined' ? __firebase_config : null;
-                if (!configStr) return false;
-                const firebaseConfig = JSON.parse(configStr);
-                app = initializeApp(firebaseConfig);
-                auth = getAuth(app);
-                db = getFirestore(app);
-                onAuthStateChanged(auth, (u) => { 
-                    user = u;
-                    if (u) loadUserData();
-                });
-                const startAuth = async () => {
-                    if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
-                        await signInWithCustomToken(auth, __initial_auth_token).catch(console.error);
-                    } else {
-                        await signInAnonymously(auth).catch(console.error);
-                    }
-                };
-                startAuth();
-                return true;
-            } catch (e) { console.error("Firebase Init Error:", e); return false; }
-        }
-        initFirebase();
-        
         // --- Game Variables ---
         let user = null;
         let userName = localStorage.getItem('pName') || "Player";
@@ -86,25 +63,55 @@
             titles: document.getElementById('screen-titles')
         };
 
-        // --- Persistence ---
+        // --- Auth Initialization ---
+        const initAuth = async () => {
+            if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
+                await signInWithCustomToken(auth, __initial_auth_token);
+            } else {
+                await signInAnonymously(auth);
+            }
+        };
+        initAuth();
+
+        onAuthStateChanged(auth, (u) => { 
+            user = u;
+            if (u) {
+                loadUserData();
+            }
+        });
+
+        // --- Persistence (Firestore) ---
         async function loadUserData() {
             if (!user) return;
-            const userRef = doc(db, 'artifacts', appId, 'users', user.uid, 'profile', 'data');
-            const snap = await getDoc(userRef);
-            if (snap.exists()) {
-                const data = snap.data();
-                winCount = data.winCount || 0;
-                totalCoins = data.totalCoins || 0;
-                upgrades = data.upgrades || { atk: 0, hp: 0 };
-                updateMainUI();
+            try {
+                const userRef = doc(db, 'artifacts', appId, 'users', user.uid, 'profile', 'data');
+                const snap = await getDoc(userRef);
+                if (snap.exists()) {
+                    const data = snap.data();
+                    winCount = data.winCount || 0;
+                    totalCoins = data.totalCoins || 0;
+                    upgrades = data.upgrades || { atk: 0, hp: 0 };
+                    updateMainUI();
+                }
+            } catch (error) {
+                console.error("Data Load Error:", error);
             }
         }
 
         async function saveUserData() {
             if (!user) return;
-            const userRef = doc(db, 'artifacts', appId, 'users', user.uid, 'profile', 'data');
-            await setDoc(userRef, { winCount, totalCoins, upgrades }, { merge: true });
-            updateMainUI();
+            try {
+                const userRef = doc(db, 'artifacts', appId, 'users', user.uid, 'profile', 'data');
+                await setDoc(userRef, { 
+                    winCount, 
+                    totalCoins, 
+                    upgrades,
+                    lastUpdated: serverTimestamp() 
+                }, { merge: true });
+                updateMainUI();
+            } catch (error) {
+                console.error("Data Save Error:", error);
+            }
         }
 
         function updateMainUI() {
@@ -144,7 +151,6 @@
             if (screenName === 'titles') renderTitles();
             if (screenName === null) gameState = 'playing';
             
-            // 画面遷移時にUIを最新の状態にする
             updateMainUI();
         }
 
@@ -242,7 +248,6 @@
         async function endQuest() { 
             cancelAnimationFrame(gameLoop); 
             totalCoins += collectedCoins;
-            // 重要な修正：値を更新した直後に保存し、UIに反映させる
             await saveUserData();
             showGacha(); 
         }
@@ -262,7 +267,7 @@
             });
             localStorage.setItem('myChars', JSON.stringify(myCharacters));
             document.getElementById('quest-coins').innerText = `獲得コイン: +${collectedCoins}`;
-            updateMainUI(); // 表示を最新に
+            updateMainUI();
         }
 
         window.goToBattleMode = () => { showScreen('formation'); };
@@ -356,8 +361,6 @@
 
             if (battleMode === 'multi') {
                 if (!roomId) { alert("ルームキーを入力してください"); return; }
-                const isReady = initFirebase();
-                if (!isReady) { alert("準備中..."); return; }
                 showScreen('matching');
                 joinMultiplayerRoom();
             } else {
@@ -367,6 +370,7 @@
         };
 
         async function joinMultiplayerRoom() {
+            if (!user) return;
             const roomRef = doc(db, 'artifacts', appId, 'public', 'data', 'rooms', roomId);
             const snap = await getDoc(roomRef);
             if (!snap.exists()) {
@@ -406,6 +410,7 @@
         }
 
         async function sendAction(actorIdx, targetIdx, isEnemyTarget) {
+            if (!user) return;
             isMyTurn = false;
             const actionRef = doc(db, 'artifacts', appId, 'public', 'data', 'rooms', roomId, 'actions', `${currentTurnCount}_${playerRole}`);
             await setDoc(actionRef, { role: playerRole, actorIdx, targetIdx, isEnemyTarget });
@@ -578,8 +583,14 @@
         async function finishBattle(isWin) {
             isMyTurn = false; 
             document.getElementById('battle-finish-btn').classList.remove('hidden');
-            if (isWin) { winCount++; totalCoins += 50; log("勝利！ 🪙+50"); }
-            else { winCount = 0; log("敗北..."); }
+            if (isWin) { 
+                winCount++; 
+                totalCoins += 50; 
+                log("勝利！ 🪙+50"); 
+            } else { 
+                winCount = 0; 
+                log("敗北..."); 
+            }
             await saveUserData();
             if (unsubscribeRoom) unsubscribeRoom();
         }
