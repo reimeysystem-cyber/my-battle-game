@@ -10,17 +10,41 @@
         import { getAuth, signInAnonymously, onAuthStateChanged, signInWithCustomToken } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
         import { getFirestore, doc, setDoc, onSnapshot, updateDoc, deleteDoc, getDoc, collection, addDoc, query, orderBy, serverTimestamp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
 
-        // --- Firebase Setup ---
-        const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : null;
-        const appId = typeof __app_id !== 'undefined' ? __app_id : "my-battle-app-v3";
-        
+        // --- Firebase Configuration & Initialization ---
         let app, auth, db;
-        
-        if (firebaseConfig) {
-            app = initializeApp(firebaseConfig);
-            auth = getAuth(app);
-            db = getFirestore(app);
+        const appId = typeof __app_id !== 'undefined' ? __app_id : "my-battle-app-v3";
+
+        function initFirebase() {
+            if (db) return true; // Already initialized
+            
+            try {
+                const configStr = typeof __firebase_config !== 'undefined' ? __firebase_config : null;
+                if (!configStr) return false;
+
+                const firebaseConfig = JSON.parse(configStr);
+                app = initializeApp(firebaseConfig);
+                auth = getAuth(app);
+                db = getFirestore(app);
+                
+                onAuthStateChanged(auth, (u) => { user = u; });
+                
+                const startAuth = async () => {
+                    if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
+                        await signInWithCustomToken(auth, __initial_auth_token).catch(console.error);
+                    } else {
+                        await signInAnonymously(auth).catch(console.error);
+                    }
+                };
+                startAuth();
+                return true;
+            } catch (e) {
+                console.error("Firebase Init Error:", e);
+                return false;
+            }
         }
+
+        // Try to init on load
+        initFirebase();
         
         // --- Game State & Variables ---
         let user = null;
@@ -61,24 +85,6 @@
             matching: document.getElementById('screen-matching'),
             difficulty: document.getElementById('screen-difficulty')
         };
-
-        const initAuth = async () => {
-            if (!auth) return;
-            try {
-                if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
-                    await signInWithCustomToken(auth, __initial_auth_token);
-                } else {
-                    await signInAnonymously(auth);
-                }
-            } catch (e) {
-                console.error("Auth failed", e);
-            }
-        };
-
-        if (auth) {
-            onAuthStateChanged(auth, (u) => { user = u; });
-            initAuth();
-        }
 
         function rand(n) { return Math.floor(Math.random() * n); }
         
@@ -134,7 +140,6 @@
             frameCount++;
             ctx.clearRect(0, 0, canvas.width, canvas.height);
             
-            // クイックな移動
             const easeFactor = 0.5;
             playerX += (targetX - playerX) * easeFactor;
 
@@ -221,7 +226,6 @@
         }
 
         window.startBattleAction = async () => {
-            if (!user && auth) await initAuth();
             currentTurnCount = 1;
             const modeInput = document.querySelector('input[name="battleMode"]:checked');
             battleMode = modeInput ? modeInput.value : 'auto';
@@ -229,7 +233,8 @@
 
             if (battleMode === 'multi') {
                 if (!roomId) { alert("ルームキーを入力してください"); return; }
-                if (!db) { alert("Firebaseが無効です。SOLOをお試しください。"); return; }
+                const isReady = initFirebase();
+                if (!isReady) { alert("Firebaseがまだ準備できていません。少し待ってから再度お試しください。"); return; }
                 showScreen('matching');
                 joinMultiplayerRoom();
             } else {
@@ -239,9 +244,17 @@
         };
 
         async function joinMultiplayerRoom() {
-            if (!db || !user) return;
+            if (!db) return;
             const roomRef = doc(db, 'artifacts', appId, 'public', 'data', 'rooms', roomId);
             try {
+                // Wait for user if not yet authenticated
+                let retry = 0;
+                while (!user && retry < 10) {
+                    await new Promise(r => setTimeout(r, 500));
+                    retry++;
+                }
+                if (!user) { alert("認証に失敗しました。ページをリロードしてください。"); showScreen('formation'); return; }
+
                 const snap = await getDoc(roomRef);
                 if (!snap.exists()) {
                     playerRole = "p1";
@@ -262,7 +275,7 @@
                     } else if (gameState === 'battle') {
                         syncFromDatabase(data);
                     }
-                });
+                }, (err) => console.error("Room listener error:", err));
             } catch (err) {
                 console.error("Firebase Error:", err);
                 showScreen('formation');
@@ -311,7 +324,7 @@
             const actionRef = doc(db, 'artifacts', appId, 'public', 'data', 'rooms', roomId, 'actions', `${currentTurnCount}_${oppRole}`);
             onSnapshot(actionRef, (snap) => { 
                 if (snap.exists()) checkBothActionsDone(); 
-            });
+            }, (err) => console.error("Action listener error:", err));
         }
 
         async function checkBothActionsDone() {
@@ -321,9 +334,8 @@
             const [s1, s2] = await Promise.all([getDoc(p1ActRef), getDoc(p2ActRef)]);
             
             if (s1.exists() && s2.exists()) {
-                // 両方の行動をローカルのコピーに適用
-                const p1Team = [...fullRoomData.p1.team];
-                const p2Team = [...fullRoomData.p2.team];
+                const p1Team = [...(fullRoomData?.p1?.team || [])];
+                const p2Team = [...(fullRoomData?.p2?.team || [])];
                 
                 const process = (act, role) => {
                     const actorSide = (role === "p1") ? p1Team : p2Team;
@@ -347,14 +359,13 @@
                 process(s1.data(), "p1");
                 process(s2.data(), "p2");
 
-                // P1が代表してデータベースを更新（HPの同期）
                 if (playerRole === "p1") {
                     const nextTurn = currentTurnCount + 1;
                     await updateDoc(doc(db, 'artifacts', appId, 'public', 'data', 'rooms', roomId), {
                         "p1.team": p1Team,
                         "p2.team": p2Team,
                         turn: nextTurn
-                    });
+                    }).catch(console.error);
                 }
                 
                 setTimeout(startMultiTurn, 1000);
