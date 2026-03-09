@@ -3,19 +3,29 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>Character Get & Battle - Expert Edition</title>
+    <title>Character Get & Battle - Fixed Victory Logic</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <script type="module">
         import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
         import { getAuth, signInAnonymously, onAuthStateChanged, signInWithCustomToken } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
         import { getFirestore, doc, setDoc, onSnapshot, updateDoc, deleteDoc, getDoc, collection, addDoc, query, orderBy, serverTimestamp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
 
-        // --- Firebase Configuration ---
-        const firebaseConfig = JSON.parse(__firebase_config);
-        const app = initializeApp(firebaseConfig);
-        const auth = getAuth(app);
-        const db = getFirestore(app);
+        // --- Firebase Configuration & Error Handling ---
+        let app, auth, db;
         const appId = typeof __app_id !== 'undefined' ? __app_id : "my-battle-app-v4";
+
+        try {
+            if (typeof __firebase_config !== 'undefined') {
+                const firebaseConfig = JSON.parse(__firebase_config);
+                app = initializeApp(firebaseConfig);
+                auth = getAuth(app);
+                db = getFirestore(app);
+            } else {
+                console.warn("Firebase config is not defined. Online features will be disabled.");
+            }
+        } catch (e) {
+            console.error("Firebase Initialization Error:", e);
+        }
 
         // --- Game Variables ---
         let user = null;
@@ -42,11 +52,6 @@
         let currentTurnCount = 0;
         const MAX_TURNS = 20;
 
-        let roomId = "";
-        let playerRole = ""; 
-        let unsubscribeRoom = null;
-        let fullRoomData = null;
-
         const canvas = document.getElementById('gameCanvas');
         const ctx = canvas.getContext('2d');
         const CHAR_NAMES = ["Knight", "Mage", "Thief", "Dragon", "Elf", "Ogre", "Slime", "Hero", "Priest", "Angel"];
@@ -63,8 +68,39 @@
             titles: document.getElementById('screen-titles')
         };
 
+        // --- Helper: Create Character ---
+        function createCharacter(rank, owner = 'Player') {
+            const name = CHAR_NAMES[rand(CHAR_NAMES.length)];
+            const type = rand(4) === 0 ? 'healer' : 'attacker';
+            let hp = 100;
+            let atk = 10;
+            let mp = type === 'healer' ? 3 : 0;
+
+            if (rank === 'A') { hp = 150; atk = 20; }
+            if (rank === 'S') { hp = 250; atk = 35; mp = type === 'healer' ? 5 : 0; }
+
+            if (owner === 'Player') {
+                if (upgrades.atk) atk += 10;
+                if (upgrades.hp) hp += 30;
+            }
+
+            return {
+                id: Date.now() + Math.random().toString(36).substr(2, 9),
+                name,
+                rank,
+                type,
+                hp,
+                maxHp: hp,
+                currentHp: hp,
+                atk,
+                mp,
+                maxMp: mp
+            };
+        }
+
         // --- Auth Initialization ---
         const initAuth = async () => {
+            if (!auth) return;
             try {
                 if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
                     await signInWithCustomToken(auth, __initial_auth_token);
@@ -75,16 +111,15 @@
         };
         initAuth();
 
-        onAuthStateChanged(auth, (u) => { 
-            user = u;
-            if (u) {
-                loadUserData();
-            }
-        });
+        if (auth) {
+            onAuthStateChanged(auth, (u) => { 
+                user = u;
+                if (u) loadUserData();
+            });
+        }
 
-        // --- Persistence (Firestore) ---
         async function loadUserData() {
-            if (!user) return;
+            if (!user || !db) return;
             try {
                 const userRef = doc(db, 'artifacts', appId, 'users', user.uid, 'profile', 'data');
                 const snap = await getDoc(userRef);
@@ -95,13 +130,11 @@
                     upgrades = data.upgrades || { atk: 0, hp: 0 };
                     updateMainUI();
                 }
-            } catch (error) {
-                console.error("Data Load Error:", error);
-            }
+            } catch (error) { console.error("Data Load Error:", error); }
         }
 
         async function saveUserData() {
-            if (!user) return;
+            if (!user || !db) return;
             try {
                 const userRef = doc(db, 'artifacts', appId, 'users', user.uid, 'profile', 'data');
                 await setDoc(userRef, { 
@@ -111,9 +144,7 @@
                     lastUpdated: serverTimestamp() 
                 }, { merge: true });
                 updateMainUI();
-            } catch (error) {
-                console.error("Data Save Error:", error);
-            }
+            } catch (error) { console.error("Data Save Error:", error); }
         }
 
         function updateMainUI() {
@@ -142,50 +173,27 @@
                 if (s) {
                     s.classList.add('hidden');
                     s.style.display = 'none';
+                    s.style.pointerEvents = 'none';
                 }
             });
             if (screenName && screens[screenName]) {
                 screens[screenName].classList.remove('hidden');
                 screens[screenName].style.display = 'flex';
+                screens[screenName].style.pointerEvents = 'auto';
                 gameState = screenName;
+            } else {
+                gameState = 'playing';
             }
             if (screenName === 'formation') renderCollection();
             if (screenName === 'battle') {
                 const logEl = document.getElementById('battle-log');
                 if (logEl) logEl.innerHTML = '';
                 log("バトル開始！");
+                document.getElementById('battle-finish-btn').classList.add('hidden');
             }
             if (screenName === 'shop') renderShop();
             if (screenName === 'titles') renderTitles();
-            if (screenName === null) {
-                gameState = 'playing';
-            }
-            
             updateMainUI();
-        }
-
-        function createCharacter(rank, ownerName = userName) {
-            const name = CHAR_NAMES[rand(CHAR_NAMES.length)];
-            const isHealer = name === "Priest" || name === "Angel" || (rank === 'S' && rand(3) === 0);
-            let hp, atk;
-            let maxMp = 0;
-
-            if (rank === 'S') { hp = 150 + rand(50); atk = 30 + rand(10); maxMp = 3; }
-            else if (rank === 'A') { hp = 100 + rand(30); atk = 20 + rand(10); maxMp = 2; }
-            else { hp = 60 + rand(20); atk = 10 + rand(10); maxMp = 1; }
-
-            if (upgrades.atk) atk += 10;
-            if (upgrades.hp) hp += 30;
-
-            return { 
-                id: Math.random().toString(36).substr(2, 9), 
-                name, rank, hp, maxHp: hp, atk, owner: ownerName,
-                type: isHealer ? 'healer' : 'attacker',
-                currentHp: hp,
-                maxHp: hp,
-                maxMp: isHealer ? maxMp : 0,
-                mp: isHealer ? maxMp : 0
-            };
         }
 
         window.openDifficultySelect = () => {
@@ -244,11 +252,7 @@
                     ctx.fillStyle = "white"; ctx.font = "10px Arial"; ctx.fillText(item.rank, item.x + 15, item.y + 25);
                 }
                 if (playerX < item.x + 30 && playerX + 40 > item.x && 420 < item.y + 40 && 460 > item.y) {
-                    if (item.type === 'coin') {
-                        collectedCoins += 10;
-                    } else {
-                        collectedCards.push(item.rank);
-                    }
+                    if (item.type === 'coin') collectedCoins += 10; else collectedCards.push(item.rank);
                     items.splice(i, 1);
                 } else if (item.y > canvas.height) items.splice(i, 1);
             }
@@ -291,7 +295,8 @@
                 const item = document.createElement('div');
                 item.className = `p-1 cursor-pointer border-2 ${isSelected ? 'border-yellow-400 bg-gray-700' : 'border-gray-800 bg-gray-900'} text-[10px] rounded`;
                 item.innerHTML = `<span class="rank-${char.rank} font-bold">RANK ${char.rank}</span><br>${char.name}<br>${char.type === 'healer' ? '💖 癒' : '⚔️ 攻'}<br>HP:${char.hp} ATK:${char.atk}`;
-                item.onclick = () => {
+                item.onclick = (e) => {
+                    e.stopPropagation();
                     const idx = selectedTeam.findIndex(t => t.id === char.id);
                     if (idx > -1) { selectedTeam.splice(idx, 1); } 
                     else if (selectedTeam.length < 3) { selectedTeam.push({...char, currentHp: char.hp, maxHp: char.hp, mp: char.maxMp}); }
@@ -367,182 +372,111 @@
             selectedActorIdx = -1;
             const modeInput = document.querySelector('input[name="battleMode"]:checked');
             battleMode = modeInput ? modeInput.value : 'auto';
-            roomId = document.getElementById('room-id-input').value.trim();
-
-            if (battleMode === 'multi') {
-                if (!roomId) { alert("ルームキーを入力してください"); return; }
-                showScreen('matching');
-                joinMultiplayerRoom();
-            } else {
-                showScreen('battle');
-                runSoloBattle();
-            }
+            showScreen('battle');
+            runSoloBattle();
         };
-
-        async function joinMultiplayerRoom() {
-            if (!user) return;
-            const roomRef = doc(db, 'artifacts', appId, 'public', 'data', 'rooms', roomId);
-            const snap = await getDoc(roomRef);
-            if (!snap.exists()) {
-                playerRole = "p1";
-                await setDoc(roomRef, { p1: { name: userName, team: selectedTeam, uid: user.uid }, p2: null, turn: 1, status: "waiting" });
-            } else {
-                playerRole = "p2";
-                await updateDoc(roomRef, { p2: { name: userName, team: selectedTeam, uid: user.uid }, status: "ready" });
-            }
-            unsubscribeRoom = onSnapshot(roomRef, (docSnap) => {
-                const data = docSnap.data();
-                if (data && data.status === "ready" && gameState !== 'battle') {
-                    showScreen('battle');
-                    syncFromDatabase(data);
-                    startMultiTurn();
-                } else if (data && gameState === 'battle') { syncFromDatabase(data); }
-            }, (err) => console.error("Room Sync Error:", err));
-        }
-
-        function syncFromDatabase(data) {
-            fullRoomData = data;
-            currentTurnCount = data.turn;
-            if (playerRole === "p1") {
-                selectedTeam = data.p1.team; enemies = data.p2 ? data.p2.team : [];
-            } else {
-                selectedTeam = data.p2.team; enemies = data.p1.team;
-            }
-            updateBattleUI();
-            checkWinCondition();
-        }
-
-        function startMultiTurn() {
-            if (checkWinCondition()) return;
-            isMyTurn = true;
-            log(`ターン ${currentTurnCount}: 行動選択...`);
-            updateBattleUI();
-        }
-
-        async function sendAction(actorIdx, targetIdx, isEnemyTarget) {
-            if (!user) return;
-            isMyTurn = false;
-            const actionRef = doc(db, 'artifacts', appId, 'public', 'data', 'rooms', roomId, 'actions', `${currentTurnCount}_${playerRole}`);
-            await setDoc(actionRef, { role: playerRole, actorIdx, targetIdx, isEnemyTarget });
-            checkBothActionsDone();
-        }
-
-        async function checkBothActionsDone() {
-            const p1ActRef = doc(db, 'artifacts', appId, 'public', 'data', 'rooms', roomId, 'actions', `${currentTurnCount}_p1`);
-            const p2ActRef = doc(db, 'artifacts', appId, 'public', 'data', 'rooms', roomId, 'actions', `${currentTurnCount}_p2`);
-            const [s1, s2] = await Promise.all([getDoc(p1ActRef), getDoc(p2ActRef)]);
-            if (s1.exists() && s2.exists()) {
-                if (playerRole === "p1") {
-                    const p1Team = fullRoomData.p1.team;
-                    const p2Team = fullRoomData.p2.team;
-                    const process = (act, actorSide, oppSide) => {
-                        const actor = actorSide[act.actorIdx];
-                        if (!actor || actor.currentHp <= 0) return;
-                        const target = act.isEnemyTarget ? oppSide[act.targetIdx] : actorSide[act.targetIdx];
-                        if (!target) return;
-                        if (actor.type === 'healer' && actor.mp > 0) {
-                            target.currentHp = Math.min(target.maxHp, target.currentHp + actor.atk); actor.mp--;
-                        } else { target.currentHp = Math.max(0, target.currentHp - actor.atk); }
-                    };
-                    process(s1.data(), p1Team, p2Team);
-                    process(s2.data(), p2Team, p1Team);
-                    await updateDoc(doc(db, 'artifacts', appId, 'public', 'data', 'rooms', roomId), { "p1.team": p1Team, "p2.team": p2Team, turn: currentTurnCount + 1 });
-                }
-                setTimeout(startMultiTurn, 1000);
-            }
-        }
 
         function runSoloBattle() {
             enemies = [createCharacter('B', 'CPU'), createCharacter('A', 'CPU'), createCharacter('S', 'CPU')].slice(0, selectedTeam.length);
             selectedTeam.forEach(c => { c.currentHp = c.maxHp; c.mp = c.maxMp; });
+            updateBattleUI();
             if (battleMode === 'auto') runAutoBattle(); else startSoloTurn();
         }
 
         function runAutoBattle() {
             const interval = setInterval(() => {
-                if (checkWinCondition() || gameState !== 'battle') { clearInterval(interval); return; }
+                if (gameState !== 'battle') { clearInterval(interval); return; }
+                
                 const isP = rand(2) === 0;
                 const side = isP ? selectedTeam : enemies;
                 const opp = isP ? enemies : selectedTeam;
                 const aliveSide = side.filter(c => c.currentHp > 0);
-                if (aliveSide.length === 0) return;
-                const actor = aliveSide[rand(aliveSide.length)];
-                const aliveOpp = opp.filter(c => c.currentHp > 0);
                 
-                if (actor.type === 'healer' && actor.mp > 0) {
-                    const target = aliveSide[rand(aliveSide.length)];
-                    target.currentHp = Math.min(target.maxHp, target.currentHp + actor.atk);
-                    actor.mp--; log(`${actor.owner}の癒し！`);
-                } else if (aliveOpp.length > 0) {
-                    const target = aliveOpp[rand(aliveOpp.length)];
-                    target.currentHp = Math.max(0, target.currentHp - actor.atk);
-                    log(`${actor.owner}の攻撃！`);
+                if (aliveSide.length > 0) {
+                    const actor = aliveSide[rand(aliveSide.length)];
+                    const aliveOpp = opp.filter(c => c.currentHp > 0);
+                    
+                    if (actor.type === 'healer' && actor.mp > 0) {
+                        const target = aliveSide[rand(aliveSide.length)];
+                        target.currentHp = Math.min(target.maxHp, target.currentHp + actor.atk);
+                        actor.mp--;
+                        log(`${isP ? '味方' : '敵'} ${actor.name}が${target.name}を回復！`);
+                    } else if (aliveOpp.length > 0) {
+                        const target = aliveOpp[rand(aliveOpp.length)];
+                        target.currentHp = Math.max(0, target.currentHp - actor.atk);
+                        log(`${isP ? '味方' : '敵'} ${actor.name}が${target.name}に${actor.atk}ダメ！`);
+                    }
                 }
+                
                 currentTurnCount++;
                 updateBattleUI();
-            }, 800);
+                if (checkWinCondition()) { clearInterval(interval); return; }
+            }, 1000);
         }
 
-        function startSoloTurn() { 
-            if (checkWinCondition()) return; 
-            isMyTurn = true; 
-            selectedActorIdx = -1; 
-            updateBattleUI(); 
-        }
+        function startSoloTurn() { if (checkWinCondition()) return; isMyTurn = true; selectedActorIdx = -1; updateBattleUI(); }
 
+        // --- FIXED WIN CONDITION LOGIC ---
         function checkWinCondition() {
             const pAlive = selectedTeam.filter(c => c.currentHp > 0);
             const eAlive = enemies.filter(c => c.currentHp > 0);
-            if (eAlive.length === 0 && enemies.length > 0) { finishBattle(true); return true; }
-            if (pAlive.length === 0 && selectedTeam.length > 0) { finishBattle(false); return true; }
-            if (currentTurnCount >= MAX_TURNS) { finishBattle(true); return true; }
+            
+            // 1. 敵全滅判定
+            if (eAlive.length === 0 && enemies.length > 0) { 
+                finishBattle(true); 
+                return true; 
+            }
+            // 2. 味方全滅判定
+            if (pAlive.length === 0 && selectedTeam.length > 0) { 
+                finishBattle(false); 
+                return true; 
+            }
+            // 3. タイムアップ（ターン切れ）判定
+            if (currentTurnCount >= MAX_TURNS) {
+                log("タイムアップ！生存数で判定します。");
+                // 生存数が多いほうが勝ち
+                if (pAlive.length > eAlive.length) {
+                    finishBattle(true);
+                } else if (eAlive.length > pAlive.length) {
+                    finishBattle(false);
+                } else {
+                    // 生存数が同じなら残りHPの合計で判定
+                    const pTotalHp = pAlive.reduce((sum, c) => sum + c.currentHp, 0);
+                    const eTotalHp = eAlive.reduce((sum, c) => sum + c.currentHp, 0);
+                    finishBattle(pTotalHp >= eTotalHp);
+                }
+                return true; 
+            }
             return false;
         }
 
         function updateBattleUI() {
             const pUI = document.getElementById('player-team-ui');
             const eUI = document.getElementById('enemy-team-ui');
-            const guide = document.getElementById('battle-guide');
             if (!pUI || !eUI) return;
             pUI.innerHTML = ''; eUI.innerHTML = '';
             document.getElementById('battle-header').innerText = `TURN ${currentTurnCount} / ${MAX_TURNS}`;
 
-            if (isMyTurn) {
-                guide.innerText = selectedActorIdx === -1 ? "★行動させる味方を選んで！" : "★対象を選んで！（敵：攻撃 / 味方：回復）";
-                guide.className = "text-yellow-400 text-[11px] mb-2 animate-pulse";
-            } else {
-                guide.innerText = "相手の行動を待機中...";
-                guide.className = "text-gray-500 text-[10px] mb-2";
-            }
-            
             const renderCard = (c, idx, isEnemy) => {
                 const div = document.createElement('div');
                 const isDead = c.currentHp <= 0;
                 const isSelectedActor = !isEnemy && selectedActorIdx === idx;
-                
                 div.className = `w-20 p-1 bg-gray-800 border-2 ${isDead ? 'opacity-30 border-gray-900' : 'border-gray-500'} text-[10px] text-center rounded transition-all`;
-                
-                if (isSelectedActor) div.classList.add('actor-glow', 'scale-110', 'z-20');
-
+                if (isSelectedActor) div.classList.add('actor-glow', 'scale-110');
                 if (!isDead && isMyTurn) {
-                    div.classList.add('cursor-pointer');
+                    div.classList.add('cursor-pointer', 'target-glow');
                     div.onclick = (e) => {
                         e.stopPropagation();
                         if (!isEnemy && selectedActorIdx === -1) {
                             selectedActorIdx = idx;
                             updateBattleUI();
                         } else if (selectedActorIdx !== -1) {
-                            if (battleMode === 'multi') sendAction(selectedActorIdx, idx, isEnemy);
-                            else handleSoloAction(selectedActorIdx, idx, isEnemy);
+                            handleSoloAction(selectedActorIdx, idx, isEnemy);
                             selectedActorIdx = -1;
                         }
                     };
-                    if (selectedActorIdx === -1 && !isEnemy) div.classList.add('target-glow');
-                    if (selectedActorIdx !== -1) div.classList.add('target-glow');
                 }
-
-                const roleIcon = c.type === 'healer' ? '💖 癒' : '⚔️ 攻';
-                div.innerHTML = `<span class="rank-${c.rank} font-bold">RANK ${c.rank}</span><br>${c.name}<br>${roleIcon}<br>HP:${Math.max(0, Math.floor(c.currentHp))}`;
+                div.innerHTML = `<span class="rank-${c.rank} font-bold">RANK ${c.rank}</span><br>${c.name}<br>${c.type === 'healer' ? '💖' : '⚔️'}<br>HP:${Math.max(0, Math.floor(c.currentHp))}`;
                 return div;
             };
             selectedTeam.forEach((c, i) => pUI.appendChild(renderCard(c, i, false)));
@@ -553,13 +487,13 @@
             isMyTurn = false;
             const actor = selectedTeam[aIdx];
             const target = isEnemy ? enemies[tIdx] : selectedTeam[tIdx];
-            
             if (actor.type === 'healer' && actor.mp > 0) {
                 target.currentHp = Math.min(target.maxHp, target.currentHp + actor.atk);
-                actor.mp--; log(`${actor.name}が${target.name}を癒した！`);
+                actor.mp--; 
+                log(`${actor.name}が${target.name}を回復！`);
             } else {
                 target.currentHp = Math.max(0, target.currentHp - actor.atk);
-                log(`${actor.name}が${target.name}を攻撃！`);
+                log(`${actor.name}が${target.name}に${actor.atk}ダメ！`);
             }
             currentTurnCount++;
             updateBattleUI();
@@ -569,14 +503,15 @@
                     const aliveEnemies = enemies.filter(c => c.currentHp > 0);
                     if (aliveEnemies.length > 0) {
                         const eActor = aliveEnemies[rand(aliveEnemies.length)];
-                        const targetPlayer = selectedTeam.filter(c => c.currentHp > 0)[rand(selectedTeam.filter(c => c.currentHp > 0).length)];
+                        const alivePlayers = selectedTeam.filter(c => c.currentHp > 0);
+                        const targetPlayer = alivePlayers[rand(alivePlayers.length)];
                         if (targetPlayer) {
                             targetPlayer.currentHp = Math.max(0, targetPlayer.currentHp - eActor.atk);
-                            log(`敵の${eActor.name}の攻撃！`);
+                            log(`敵 ${eActor.name}が${targetPlayer.name}に${eActor.atk}ダメ！`);
                         }
                     }
                     updateBattleUI();
-                    setTimeout(startSoloTurn, 600);
+                    if (!checkWinCondition()) setTimeout(startSoloTurn, 600);
                 }
             }, 600);
         }
@@ -585,7 +520,7 @@
             const l = document.getElementById('battle-log'); 
             if (!l) return;
             const entry = document.createElement('div');
-            entry.className = "border-l-2 border-yellow-500 pl-2 mb-1 text-[10px]";
+            entry.className = "border-l-2 border-yellow-500 pl-2 mb-1 animate-pulse";
             entry.innerText = msg;
             l.appendChild(entry);
             l.scrollTop = l.scrollHeight; 
@@ -593,29 +528,24 @@
 
         async function finishBattle(isWin) {
             isMyTurn = false; 
-            document.getElementById('battle-finish-btn').classList.remove('hidden');
-            document.getElementById('battle-finish-btn').style.display = 'block';
+            const finishBtn = document.getElementById('battle-finish-btn');
+            if (finishBtn) finishBtn.classList.remove('hidden');
+            
             if (isWin) { 
                 winCount++; 
                 totalCoins += 50; 
-                log("勝利！ 🪙+50"); 
+                log("★★★ 勝利！ 🪙+50 ★★★"); 
             } else { 
                 winCount = 0; 
-                log("敗北..."); 
+                log("××× 敗北... ×××"); 
             }
             await saveUserData();
-            if (unsubscribeRoom) unsubscribeRoom();
         }
 
-        window.resetGame = () => { 
-            showScreen('start');
-            if (gameLoop) cancelAnimationFrame(gameLoop);
-        };
+        window.resetGame = () => { showScreen('start'); if (gameLoop) cancelAnimationFrame(gameLoop); };
 
         function handleMove(e) {
             if (gameState !== 'playing') return;
-            // ボタン操作と重複しないように調整
-            e.preventDefault();
             const rect = canvas.getBoundingClientRect();
             let clientX = e.touches ? e.touches[0].clientX : e.clientX;
             const ratio = canvas.width / rect.width;
@@ -627,117 +557,97 @@
         canvas.addEventListener('mousedown', handleMove);
         canvas.addEventListener('mousemove', (e) => { if (e.buttons === 1) handleMove(e); });
 
-        window.onload = () => {
-            showScreen('start');
-            updateMainUI();
-        };
+        window.onload = () => { showScreen('start'); updateMainUI(); };
     </script>
     <style>
         @import url('https://fonts.googleapis.com/css2?family=DotGothic16&display=swap');
-        body { font-family: 'DotGothic16', sans-serif; background: #0a0a0a; color: white; overflow: hidden; }
-        #ui-container { user-select: none; }
-        canvas { display: block; margin: 0 auto; background: #111; border: 4px solid #333; max-width: 100%; height: auto; touch-action: none; }
+        body { font-family: 'DotGothic16', sans-serif; background: #0a0a0a; color: white; overflow: hidden; margin: 0; }
+        canvas { display: block; background: #111; border: 4px solid #333; max-width: 100%; height: auto; touch-action: none; z-index: 10; }
+        .hidden { display: none !important; }
+        .screen-layer {
+            position: absolute; top: 0; left: 0; right: 0; bottom: 0;
+            z-index: 100; pointer-events: auto;
+            display: flex; flex-direction: column; align-items: center; justify-content: center;
+        }
         .rank-S { color: #facc15; } .rank-A { color: #f87171; } .rank-B { color: #60a5fa; }
         .target-glow { animation: glow 1s infinite alternate; }
         .actor-glow { border-color: #facc15 !important; box-shadow: 0 0 15px #facc15; }
         @keyframes glow { from { border-color: #555; } to { border-color: #fff; box-shadow: 0 0 8px #fff; } }
-        .hidden { display: none !important; }
-        /* ボタン等の重なりを確実にする */
-        .screen-layer {
-            position: absolute;
-            top: 0; left: 0; right: 0; bottom: 0;
-            z-index: 50;
-            pointer-events: auto;
-        }
-        button {
-            touch-action: manipulation;
-            position: relative;
-            z-index: 60;
-        }
+        button { cursor: pointer; transition: transform 0.1s; }
+        button:active { transform: scale(0.95); }
+        #battle-log { scrollbar-width: thin; scrollbar-color: #555 #111; }
     </style>
 </head>
-<body class="flex flex-col items-center justify-center min-h-screen p-2">
-    <div id="ui-container" class="w-full max-w-[360px]">
-        <div class="flex flex-col mb-2 px-2">
-            <div class="flex justify-between items-center">
-                <h1 class="text-lg text-yellow-400 font-bold">QUEST & BATTLE</h1>
-                <div id="top-score" class="text-[10px] bg-gray-800 px-2 py-1 rounded">WINS: 0 | 🪙 0</div>
-            </div>
-            <div id="player-title" onclick="window.openTitles()" class="text-[10px] text-gray-400 cursor-pointer hover:text-white transition-colors underline decoration-dotted">🐣駆け出し冒険者 (称号一覧)</div>
+<body class="flex flex-col items-center justify-center min-h-screen">
+    <div id="ui-container" class="relative w-full max-w-[360px]">
+        <div class="p-2 flex justify-between items-center text-[10px] bg-black/50">
+            <div>WINS: <span id="top-score">0</span></div>
+            <div id="player-title" onclick="window.openTitles()" class="text-yellow-400 underline">🐣駆け出し冒険者</div>
         </div>
-        
-        <div id="game-container" class="relative">
+
+        <div class="relative">
             <canvas id="gameCanvas" width="360" height="500"></canvas>
             
-            <div id="screen-start" class="screen-layer flex flex-col items-center justify-center bg-black/80 p-6 text-center">
-                <input id="username-input" type="text" maxlength="10" placeholder="冒険者の名前" class="w-full p-2 text-black rounded text-sm text-center mb-6">
-                <div class="grid grid-cols-1 gap-3 w-full mb-8">
-                    <button onclick="window.openDifficultySelect()" class="p-4 bg-green-700 rounded-lg border-2 border-green-400 font-bold">クエストへ</button>
-                    <button onclick="window.goToBattleMode()" class="p-4 bg-red-700 rounded-lg border-2 border-red-400 font-bold">バトル・編成</button>
-                    <button onclick="window.openShop()" class="p-2 bg-yellow-700 rounded-lg border-2 border-yellow-400 font-bold text-sm">ショップ（強化）</button>
+            <div id="screen-start" class="screen-layer bg-black/80 p-6">
+                <input id="username-input" type="text" placeholder="名前を入力" class="w-full p-2 text-black rounded mb-4 text-center">
+                <button onclick="window.openDifficultySelect()" class="w-full p-4 bg-green-600 rounded mb-2 font-bold">クエスト開始</button>
+                <button onclick="window.goToBattleMode()" class="w-full p-4 bg-blue-600 rounded mb-2 font-bold">編成・バトル</button>
+                <button onclick="window.openShop()" class="w-full p-2 bg-yellow-600 rounded text-sm">ショップ</button>
+            </div>
+
+            <div id="screen-difficulty" class="screen-layer hidden bg-black/90 p-6">
+                <h2 class="mb-4 text-green-400">難易度を選択</h2>
+                <div class="flex flex-col gap-2 w-full">
+                    <button onclick="window.startQuest(0)" class="p-4 bg-blue-900 border border-blue-400 rounded">EASY</button>
+                    <button onclick="window.startQuest(1)" class="p-4 bg-yellow-900 border border-yellow-400 rounded">NORMAL</button>
+                    <button onclick="window.startQuest(2)" class="p-4 bg-red-900 border border-red-400 rounded">HARD</button>
+                    <button onclick="window.resetGame()" class="mt-4 text-gray-400 underline">戻る</button>
                 </div>
             </div>
 
-            <div id="screen-titles" class="screen-layer hidden flex-col items-center justify-center bg-black/95 p-6">
-                <h2 class="text-lg mb-4 text-yellow-400 font-bold">称号コレクション</h2>
-                <div id="title-list" class="w-full flex flex-col bg-gray-900/50 rounded p-2 overflow-y-auto max-h-80 border border-gray-700"></div>
-                <button onclick="window.resetGame()" class="mt-6 px-8 py-2 bg-gray-700 rounded text-sm">戻る</button>
-            </div>
-
-            <div id="screen-difficulty" class="screen-layer hidden flex-col items-center justify-center bg-black/90 p-6">
-                <h2 class="text-lg mb-6 text-green-400 text-center">難易度を選択</h2>
-                <div class="flex flex-col gap-4 w-full">
-                    <button onclick="window.startQuest(0)" class="p-3 bg-blue-900 border border-blue-400 rounded">EASY</button>
-                    <button onclick="window.startQuest(1)" class="p-3 bg-yellow-900 border border-yellow-400 rounded">NORMAL</button>
-                    <button onclick="window.startQuest(2)" class="p-3 bg-red-900 border border-red-400 rounded">HARD</button>
-                    <button onclick="window.resetGame()" class="mt-4 p-2 text-sm text-gray-400 underline">戻る</button>
+            <div id="screen-formation" class="screen-layer hidden bg-black/95 p-4">
+                <h2 class="mb-2 text-blue-300 font-bold">チーム編成</h2>
+                <div id="collection-list" class="grid grid-cols-3 gap-2 w-full max-h-48 overflow-y-auto mb-4 bg-gray-900 p-2 border border-gray-600 rounded"></div>
+                <div class="bg-gray-800 p-3 rounded mb-4 w-full text-center">
+                    <div class="flex justify-around text-[10px] mb-2">
+                        <label><input type="radio" name="battleMode" value="auto" checked> AUTO</label>
+                        <label><input type="radio" name="battleMode" value="manual"> MANUAL</label>
+                    </div>
+                </div>
+                <div class="flex gap-2 w-full">
+                    <button onclick="window.resetGame()" class="flex-1 py-2 bg-gray-600 rounded">戻る</button>
+                    <button id="battle-btn" onclick="window.startBattleAction()" class="flex-2 py-2 bg-red-600 font-bold rounded">バトル開始</button>
                 </div>
             </div>
 
-            <div id="screen-gacha" class="screen-layer hidden flex-col items-center justify-center bg-black/90 p-4">
-                <h2 class="text-xl mb-4 text-green-400">クエスト完了！</h2>
-                <div id="quest-coins" class="text-yellow-400 mb-4 text-sm font-bold">獲得コイン: +0</div>
+            <div id="screen-battle" class="screen-layer hidden bg-black/80 py-4 justify-between">
+                <div id="battle-header" class="text-yellow-400 text-sm"></div>
+                <div class="w-full flex flex-col items-center gap-2">
+                    <div id="enemy-team-ui" class="flex gap-2"></div>
+                    <div class="text-xs text-gray-500">VS</div>
+                    <div id="player-team-ui" class="flex gap-2"></div>
+                </div>
+                <div id="battle-log" class="h-24 overflow-y-auto w-full px-3 text-[10px] bg-black/60 border-t border-b border-gray-700"></div>
+                <button id="battle-finish-btn" onclick="window.resetGame()" class="hidden px-8 py-2 bg-yellow-500 text-black font-bold rounded">戻る</button>
+            </div>
+
+            <div id="screen-gacha" class="screen-layer hidden bg-black/90 p-4">
+                <h2 class="text-xl text-green-400 mb-2">獲得！</h2>
+                <div id="quest-coins" class="text-yellow-400 mb-4 text-sm"></div>
                 <div id="gacha-result" class="flex flex-wrap justify-center gap-2 mb-6"></div>
                 <button onclick="window.goToBattleMode()" class="w-full py-3 bg-blue-600 rounded font-bold">編成へ</button>
             </div>
 
-            <div id="screen-shop" class="screen-layer hidden flex-col items-center justify-center bg-black/95 p-4">
-                <h2 class="text-lg mb-4 text-yellow-400 font-bold text-center">強化ショップ</h2>
-                <div id="shop-items" class="flex flex-col gap-3 w-full mb-6 overflow-y-auto max-h-64 px-2"></div>
-                <button onclick="window.resetGame()" class="w-full py-2 bg-gray-600 rounded text-sm">戻る</button>
+            <div id="screen-shop" class="screen-layer hidden bg-black/95 p-4">
+                <h2 class="mb-4 text-yellow-400 font-bold">強化ショップ</h2>
+                <div id="shop-items" class="flex flex-col gap-2 w-full mb-6"></div>
+                <button onclick="window.resetGame()" class="w-full py-2 bg-gray-600 rounded">戻る</button>
             </div>
-
-            <div id="screen-formation" class="screen-layer hidden flex-col items-center justify-center bg-black/95 p-4">
-                <h2 class="text-lg mb-2 text-blue-300 font-bold text-center">チーム編成 (最大3)</h2>
-                <div id="collection-list" class="grid grid-cols-3 gap-2 w-full max-h-48 overflow-y-auto mb-4 bg-gray-900 p-2 border border-gray-600 rounded"></div>
-                <div class="bg-gray-800 p-3 rounded mb-4 w-full border border-gray-600">
-                    <div class="flex justify-around text-[10px] mb-3">
-                        <label class="flex items-center gap-1"><input type="radio" name="battleMode" value="auto" checked> AUTO</label>
-                        <label class="flex items-center gap-1"><input type="radio" name="battleMode" value="manual"> SOLO</label>
-                        <label class="flex items-center gap-1"><input type="radio" name="battleMode" value="multi"> MULTI</label>
-                    </div>
-                    <input id="room-id-input" type="text" placeholder="ルームキー" class="w-full p-1 text-black text-[10px] rounded text-center">
-                </div>
-                <div class="flex gap-2 w-full">
-                    <button onclick="window.resetGame()" class="flex-1 py-2 bg-gray-600 rounded text-sm">戻る</button>
-                    <button id="battle-btn" onclick="window.startBattleAction()" class="flex-[2] py-2 bg-red-600 font-bold rounded text-sm disabled:opacity-50">バトル開始</button>
-                </div>
-            </div>
-
-            <div id="screen-battle" class="screen-layer hidden flex-col items-center justify-between bg-black/80 py-4">
-                <div id="battle-header" class="text-center text-yellow-400 text-[10px] font-bold"></div>
-                <div class="flex flex-col gap-1 w-full px-2 items-center">
-                    <div id="battle-guide"></div>
-                    <div id="enemy-team-ui" class="flex justify-center gap-2"></div>
-                    <div class="text-[9px] text-gray-500 my-2">VS</div>
-                    <div id="player-team-ui" class="flex justify-center gap-2"></div>
-                </div>
-                <div id="battle-log" class="h-24 overflow-y-auto w-full px-3 text-gray-200 bg-black/60 py-2 text-[10px]"></div>
-                <button id="battle-finish-btn" onclick="window.resetGame()" class="hidden mx-auto px-10 py-2 bg-yellow-500 text-black font-bold rounded">戻る</button>
-            </div>
-
-            <div id="screen-matching" class="screen-layer hidden flex items-center justify-center bg-black/90">
-                <div class="animate-pulse text-yellow-400">マッチング中...</div>
+            
+            <div id="screen-titles" class="screen-layer hidden bg-black/95 p-6">
+                <h2 class="mb-4 text-yellow-400 font-bold">称号</h2>
+                <div id="title-list" class="w-full flex flex-col bg-gray-900/50 rounded p-2 overflow-y-auto max-h-80 border border-gray-700"></div>
+                <button onclick="window.resetGame()" class="mt-6 px-8 py-2 bg-gray-700 rounded text-sm">戻る</button>
             </div>
         </div>
     </div>
