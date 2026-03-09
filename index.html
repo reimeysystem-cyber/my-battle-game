@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Character Get & Battle - Multi Mode</title>
+    <title>Character</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <script type="module">
         import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
@@ -458,11 +458,11 @@
             if (isWin) { 
                 winCount++; 
                 if (scoreDisp) scoreDisp.innerText = `WINS: ${winCount}`; 
-                log("★ 勝利！ おめでとう！ ★"); 
+                log("★ 勝利！"); 
             } else { 
                 winCount = 0; 
                 if (scoreDisp) scoreDisp.innerText = `WINS: 0`; 
-                log("× 敗北... 修行し直そう ×"); 
+                log("× 敗北... "); 
             }
             if (unsubscribeRoom) unsubscribeRoom();
         }
